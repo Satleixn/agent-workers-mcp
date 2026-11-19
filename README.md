@@ -21,6 +21,7 @@
 | `docs/manual.md` | 操作说明书：用法、模型分档、日志、常见问题 |
 | `docs/claude-md-snippet.md` | 建议加进 `~/.claude/CLAUDE.md` 的一节，告诉 Claude 什么时候交给工人 |
 | `install.py` | 注册 MCP 服务、安装子代理 |
+| `LICENSE` | MIT 许可证 |
 
 ## 安全设计
 
@@ -92,3 +93,7 @@ python install.py
 - Gemini 和 DeepSeek 的模型名会变，默认模型写在 `ask_gemini.py`、`ask_deepseek.py` 顶部的 `DEFAULT_MODEL`，分档表在 `workers_mcp.py` 的工具描述里。
 - 读仓库模式下 agy 不能执行命令，所以不能全文搜索；它按 `FILES.txt`（`git ls-files` 的结果）挑文件读。
 - 每次 Gemini 调用固定有约 2.5 万 token 的代理开销，小问题要合并成一次问。
+
+## 许可证
+
+[MIT](LICENSE)。本项目只是调用 Antigravity CLI 和 DeepSeek API 的工具，使用时仍须遵守 Google 和 DeepSeek 各自的服务条款。
