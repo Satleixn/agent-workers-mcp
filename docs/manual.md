@@ -75,7 +75,7 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 - **按文件名和位置拒绝**：`secrets.toml`、各种 `.env`、证书和私钥（`*.pem`、`*.key`、`*.p12`、`*.pfx`、`*.jks`、`id_rsa*` 等）、`credentials.json`、`service_account*.json`、`.netrc`、`.npmrc`、`.pypirc`、`.git-credentials`、`.claude.json`；`.streamlit`、`.ssh`、`.aws`、`.kube`、`.gnupg`、`.azure`、`.gcloud` 目录下的文件；`~/.gemini` 和本仓库 `logs/` 里的任何文件。
 - **按内容拒绝**：文件内容、提示词、system 提示里出现像 Key 的内容就拒绝。包括各家 Key 和令牌的格式、JWT、`Bearer` 长串、私钥块、带密码的连接串、`xxx_api_key = "长串"` 和 `.env`/YAML 里的无引号写法。变量名以 `_path`、`_file`、`_dir`、`_url`、`_name` 结尾的赋值不算（它们存的是位置）。报错只说类型和行号。
 - **Gemini 只读**：每次调用都在临时目录装上守门钩子 `agy_guard.py`。它只放行工作区内、通过上面检查的 `read_file`；执行命令、写文件、访问网页等一律拒绝；钩子自己出错也拒绝。仅靠 `--mode plan` 和空临时目录并不够：实测 agy 仍能读到工作区外的文件，所以需要钩子。
-- **不会误走付费 API**：传给 agy 的环境变量去掉了所有名字里带 key、token、secret、password、credential 的变量。斜杠命令也已禁用。
+- **不会误走付费 API**：传给 agy 的环境变量去掉了所有名字里带 key、token、secret、password、credential 的变量。每次调用还通过 `--settings` 强制设定 `useG1Credits: false`（订阅额度用完后不改用付费 AI credits）和 `modelProvider: ""`（不直连 Gemini API）。这些设定只对本工具的调用生效，不写入你的 agy 设置。斜杠命令也已禁用。
 - **哪些仓库可以发**：由你的 CLAUDE.md 决定（见 snippet 的 Privacy 一行）。代码只守密钥这条底线，不限制目录。
 
 ## 5. 费用、额度和时间

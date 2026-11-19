@@ -60,6 +60,10 @@ MAX_CMDLINE_CHARS = 32_000
 # Environment variables agy never needs. Dropping them keeps our DeepSeek key away from it, and keeps a
 # future GEMINI_API_KEY / GOOGLE_API_KEY from steering it to the paid API instead of the subscription.
 _SECRET_ENV = re.compile(r"(?i)api_?key|token|secret|password|credential|^GOOGLE_(?:GENAI|CLOUD)_")
+# Per-run settings (never saved): keep agy on the subscription even if the user's own agy settings say otherwise.
+# useG1Credits would spend paid AI credits once the plan quota runs out; modelProvider "gemini" would call the
+# paid Gemini API with GEMINI_API_KEY.
+AGY_SETTINGS = json.dumps({"useG1Credits": False, "modelProvider": ""})
 # agy's error when it cannot create its local conversation record; it fails before any model call.
 START_FAILURE = "failed to start conversation"
 # agy keeps shared per-user state (conversation index, summaries database), so this process runs one at a time.
@@ -132,7 +136,7 @@ def _run_agy(args: list[str], cwd: str, cancel: Cancel | None = None, wait_s: in
 
 def _run_agy_once(args: list[str], cwd: str, cancel: Cancel | None = None, wait_s: int = PRINT_TIMEOUT_S + 30) -> dict:
     """One agy run in print mode with JSON output; returns the parsed result object."""
-    cmd = [_agy(), *args, "--output-format", "json"]
+    cmd = [_agy(), *args, "--settings", AGY_SETTINGS, "--output-format", "json"]
     if len(subprocess.list2cmdline(cmd)) > MAX_CMDLINE_CHARS:
         raise WorkerError(f"prompt too long for the Windows command line (limit about {MAX_CMDLINE_CHARS} "
                           "characters); put the material in files instead")
