@@ -48,8 +48,9 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
       gemini-4-neon-high        multi-file review, architecture review, hard bug hypotheses
       gemini-4-neon-xhigh       maths/statistics correctness, hardest reasoning; tell the user before using
       gemini-4-argon-high       stand-in for neon-high/xhigh when the Gemini pool is low (separate quota)
-    Before neon-high/xhigh call gemini_quota: Gemini five-hour bucket under 25% -> drop a level or use Argon;
-    under 10% -> stop using Gemini and do the work yourself, telling the user.
+    Quota is checked automatically before each call: any bucket of the model's pool under 10% -> the call is
+    refused, do the work yourself and tell the user; Gemini five-hour bucket under 25% -> neon-high/xhigh are
+    refused, retry with gemini-4-argon-high (separate quota) or gemini-4-neon-medium as the error suggests.
     Each call carries ~25k tokens of agent overhead, so batch small questions into one call.
     A call can take up to ~15 minutes: neon-high on 100KB+ of input often thinks for 3+ minutes. Files may total
     700KB, but for neon-high, neon-xhigh or argon keep each call under ~150KB and split larger reviews by module.
@@ -93,7 +94,8 @@ def ask_deepseek(prompt: str, files: list[str] = [], model: str | None = None, e
 
 @server.tool()
 def gemini_quota() -> str:
-    """Remaining Gemini subscription quota per bucket (this check spends no quota). Call before neon-high/xhigh."""
+    """Remaining Gemini subscription quota per bucket (this check spends no quota). ask_gemini already checks
+    quota itself; call this only when the user asks or to plan a series of large reviews."""
     try:
         rows = _gemini_quota()
     except WorkerError as e:

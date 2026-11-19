@@ -81,7 +81,7 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 ## 5. 费用、额度和时间
 
 - **Gemini**：只用订阅额度。Neon、Hydrogen 共用一个池（周额度 + 5 小时额度），Argon 单独一个周额度池。每次调用固定约 2.5 万 token 的代理开销。
-  - 5 小时额度剩余低于 25%：降一档或改用 Argon；低于 10%：停用 Gemini。
+  - 每次调用前，代码会自动按模型所在的额度池查一次额度（结果缓存 60 秒，查额度不耗额度）：池里任何一项低于 10% 就拒绝调用，由 Claude 自己做；Gemini 5 小时额度低于 25% 时拒绝 neon-high 和 xhigh，报错里建议改用 argon-high（独立额度）或 neon-medium。查额度本身失败时照常调用。被额度拒绝的调用不记日志。
   - 单次时间上限是本工具设的（agy 默认不限时）：MCP 调用 15 分钟，命令行 9 分钟（低于 Claude 的 Shell 工具 10 分钟上限）。neon-high 读 100KB 以上材料时光思考就常要 3 分钟以上，用 neon-high、xhigh、argon 时每次的材料最好控制在 150KB 以内。
   - 在 Claude 里按 Esc 会立即结束 agy，不再消耗额度。
 - **DeepSeek**：按 token 计费，思考 token 按输出计费。官方在工作日 01:00–04:00 和 06:00–10:00（UTC）收双倍价格，这段时间调用时结果第一行末尾会标 `PEAK-2x-price`。价格以 DeepSeek 官网为准。
@@ -99,6 +99,7 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 | `print timeout … the response is partial` | 超过时间上限。换小一档模型或拆分材料，不要原样重试：耗时主要在思考上 |
 | `prompt too long for the Windows command line` | 提示词超过约 3.2 万字符。把材料写进文件，用 `files` 传 |
 | `model … is not allowed` | 以 `-` 开头的模型名和 orchestrator 模型被拒；从分档表里选 |
+| `Gemini quota low` 或 `needs the Gemini five-hour quota` | 额度不够，按报错换模型，或者等重置时间过后再用 |
 | `invalid model selection` | 模型名写错了；运行 `agy models` 看当前可用的名字 |
 | 结果第一行有 `denied=N` | 守门钩子拒绝了 agy 的 N 次操作；在日志的 `tool_calls` 里看具体是哪些、为什么 |
 | 一个文件被 "looks like a … key" 拒绝 | 先看报错里的行号确认是不是真 Key。真 Key：从代码里移走并轮换；误报：只发其他文件，或者让 Claude 自己读 |

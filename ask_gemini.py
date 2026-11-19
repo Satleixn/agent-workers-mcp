@@ -64,6 +64,13 @@ _SECRET_ENV = re.compile(r"(?i)api_?key|token|secret|password|credential|^GOOGLE
 START_FAILURE = "failed to start conversation"
 # agy keeps shared per-user state (conversation index, summaries database), so this process runs one at a time.
 _agy_lock = threading.Lock()
+# Quota floors, checked before every call against the model's own pool (a quota query spends no quota).
+QUOTA_STOP_PCT = 10        # any live bucket of the pool below this: refuse, Claude does the work itself
+QUOTA_HIGH_TIER_PCT = 25   # Gemini five-hour bucket below this: refuse the costliest models
+HIGH_TIER_MODELS = {"gemini-4-neon-high", "gemini-4-neon-xhigh"}
+QUOTA_CACHE_S = 60
+_quota_cache: tuple[float, list[dict]] | None = None
+_quota_lock = threading.Lock()
 
 
 def _agy() -> str:
@@ -271,6 +278,7 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
             raise WorkerError(f"not a directory: {repo_path}")
         if is_denied_path(repo_path / "x"):
             raise WorkerError(f"refused: {repo_path} is a secret location and is never mounted")
+    quota_note = _check_quota(model)
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="agy_", ignore_cleanup_errors=True) as work:
         copies: dict[str, Path] = {}
@@ -289,7 +297,7 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
             full = REPO_NOTE.format(repo=repo_path) + "\n" + full
             extra = ["--add-dir", str(repo_path)]
         record = {"worker": "gemini", "model": model, "prompt": full, "files": file_records(checked),
-                  "repo": str(repo_path) if repo_path else None}
+                  "repo": str(repo_path) if repo_path else None, "quota_check": quota_note}
         try:
             result = _run_agy(
                 [f"--print={full}", "--model", model, "--mode", "plan", "--disable-slash-commands", *extra,
@@ -339,6 +347,39 @@ def gemini_quota() -> list[dict]:
     if not rows:
         raise WorkerError("agy /quota returned no quota data")
     return rows
+
+
+def _quota_rows() -> list[dict]:
+    """gemini_quota(), reused for QUOTA_CACHE_S so back-to-back calls in the MCP server query it once."""
+    global _quota_cache
+    with _quota_lock:
+        if _quota_cache is None or time.monotonic() - _quota_cache[0] >= QUOTA_CACHE_S:
+            _quota_cache = (time.monotonic(), gemini_quota())
+        return _quota_cache[1]
+
+
+def _check_quota(model: str) -> str:
+    """Refuse a call its quota pool cannot afford; return a note for the call log. Argon has its own pool,
+    every other model draws on "Gemini Models". If the quota query itself fails the call goes ahead: the real
+    call will then report what is wrong with agy more clearly."""
+    try:
+        rows = _quota_rows()
+    except WorkerError as e:
+        print(f"quota check failed, calling anyway: {e}", file=sys.stderr)
+        return f"check failed: {e}"
+    group = "Gemini 4 Argon" if "argon" in model else "Gemini Models"
+    live = [r for r in rows if r["group"] == group]
+    for r in live:
+        if r["remaining_pct"] < QUOTA_STOP_PCT:
+            raise WorkerError(f"Gemini quota low: {group} / {r['bucket']} at {r['remaining_pct']}% (resets "
+                              f"{r['reset']}); do the work yourself and tell the user")
+    if model in HIGH_TIER_MODELS:
+        for r in live:
+            if "five hour" in r["bucket"].lower() and r["remaining_pct"] < QUOTA_HIGH_TIER_PCT:
+                raise WorkerError(f"{model} needs the Gemini five-hour quota at {QUOTA_HIGH_TIER_PCT}% or more, it is "
+                                  f"at {r['remaining_pct']}%; use gemini-4-argon-high (separate quota) or "
+                                  "gemini-4-neon-medium instead")
+    return ", ".join(f"{r['bucket']} {r['remaining_pct']}%" for r in live) or f"no {group} buckets"
 
 
 def main() -> int:
