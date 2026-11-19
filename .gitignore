@@ -1,0 +1,7 @@
+# Local environment
+.venv/
+__pycache__/
+*.pyc
+
+# Call logs hold prompts and answers verbatim; they never leave this machine
+logs/
