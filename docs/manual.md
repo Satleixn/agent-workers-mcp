@@ -1,6 +1,6 @@
 # 操作说明书
 
-下文用 `<仓库>` 指你克隆本仓库的目录，用 `<仓库>\.venv\Scripts\python` 指装好依赖的 venv 里的 Python（venv 建在别处时换成那个路径）。安装步骤见 [README](../README.md)。
+下文用 `<仓库>` 指你克隆本仓库的目录，用 `<仓库>\.venv\Scripts\python` 指装好依赖的 venv 里的 Python（venv 建在别处时换成那个路径）。安装步骤见 [README](../README.zh-CN.md)。
 
 ## 1. 日常怎么用
 

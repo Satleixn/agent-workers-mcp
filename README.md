@@ -1,48 +1,48 @@
 # agent-workers-mcp
 
-> An MCP server that lets Claude Code hand work to Gemini (via the Antigravity CLI, on a Google AI subscription) and DeepSeek (pay-per-token API), with a read-only guard, a secret scanner and a local call log.
+**English** | [简体中文](README.zh-CN.md)
 
-让 Claude 当主脑、把一部分工作交给"工人"模型的 MCP 服务：
+An MCP server that lets Claude Code act as the lead and hand part of the work to "worker" models:
 
-- **Gemini**：通过 Antigravity CLI（`agy`）调用，只用 Google 订阅额度，**不会自动改走付费 API**。适合读大量文件后做总结、第二意见审查、整个仓库的只读审查。
-- **DeepSeek**：直接调 OpenAI 兼容 API，按 token 付费。适合起草、改写、翻译这类批量文字工作。
-- Claude 负责拆任务、写任务说明、核验结果；工人的回答只当线索。
+- **Gemini**, through the Antigravity CLI (`agy`), on your Google AI subscription quota only. It **never falls back to the paid API**. Good for summarising many files, second-opinion reviews, and read-only reviews of a whole repository.
+- **DeepSeek**, through its OpenAI-compatible API, billed per token. Good for bulk text work: drafting, rewriting, translating.
+- Claude splits the task, writes the brief and verifies the result; a worker's answer is treated as a lead, not a fact.
 
-## 组成
+## Contents
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `workers_mcp.py` | MCP 服务（stdio），提供 `ask_gemini`、`ask_deepseek`、`gemini_quota` 三个工具 |
-| `ask_gemini.py` | 调用 agy；也可以直接在命令行用 |
-| `ask_deepseek.py` | 调用 DeepSeek API；也可以直接在命令行用 |
-| `agy_guard.py` | agy 的 `PreToolUse` 钩子：每次调用都强制只读 |
-| `worker_common.py` | 共用的密钥检查、大小上限、调用日志 |
-| `agents/` | 两个 Claude Code 子代理：`gemini-reviewer`（第二意见审查）、`deepseek-drafter`（起草和翻译） |
-| `docs/manual.md` | 操作说明书：用法、模型分档、日志、常见问题 |
-| `docs/claude-md-snippet.md` | 建议加进 `~/.claude/CLAUDE.md` 的一节，告诉 Claude 什么时候交给工人 |
-| `install.py` | 注册 MCP 服务、安装子代理 |
-| `LICENSE` | MIT 许可证 |
+| `workers_mcp.py` | The MCP server (stdio) with three tools: `ask_gemini`, `ask_deepseek`, `gemini_quota` |
+| `ask_gemini.py` | Calls agy; also usable from the command line |
+| `ask_deepseek.py` | Calls the DeepSeek API; also usable from the command line |
+| `agy_guard.py` | agy `PreToolUse` hook that makes every call read-only |
+| `worker_common.py` | Shared secret checks, size limit and call log |
+| `agents/` | Two Claude Code subagents: `gemini-reviewer` (second-opinion review) and `deepseek-drafter` (drafts and translations) |
+| `docs/manual.md` | User manual (Chinese): usage, model tiers, logs, troubleshooting |
+| `docs/claude-md-snippet.md` | A section to add to `~/.claude/CLAUDE.md` telling Claude when to hand work to the workers |
+| `install.py` | Registers the MCP server and installs the subagents |
+| `LICENSE` | MIT license |
 
-## 安全设计
+## Security design
 
-- **Gemini 只能读**：agy 在新建的临时目录里以 `--mode plan` 运行；每次调用都在临时目录写一份工作区本地钩子（`.agents/hooks.json`），由 `agy_guard.py` 判定 agy 的每一次操作：
-  - 只放行 `read_file`，而且文件必须在工作区内，并通过下面的密钥检查；
-  - 执行命令、写文件、访问网页等其他一切操作都拒绝；钩子自己出错也拒绝。
-  - 这个钩子只对本服务发起的调用生效，不影响你自己平时用 agy。
-- **密钥不外发**：按文件名（`secrets.toml`、`.env*`、证书和私钥、云服务凭据……）、目录（`.ssh`、`.aws`……）和内容（`sk-…`、`AIza…`、GitHub/AWS/Slack/Stripe/Hugging Face/npm 令牌、JWT、私钥块、带密码的连接串、硬编码的密钥赋值）拦截。报错只给类型和行号，不显示内容。
-- **不会误走付费 API**：传给 agy 的环境变量去掉了所有 Key 和令牌；每次调用都用 `--settings` 关掉付费兜底（`useG1Credits`）和 Gemini API 直连（`modelProvider`），不改你自己的 agy 设置。
-- **额度保护**：每次调用前自动查一次额度（缓存 60 秒）。模型所在额度池里任何一项低于 10% 就拒绝；Gemini 5 小时额度低于 25% 时，拒绝 neon-high 和 xhigh。
-- **调用日志只在本机**：`logs/YYYY-MM.jsonl` 记下每次真正发出的调用（提示词、文件指纹、回答、用量、钩子的每次判定），保留 3 个月；被安全检查拒绝的请求不记录。`logs/` 不进 git。
+- **Gemini can only read.** agy runs in plan mode (`--mode plan`) in a fresh temporary directory. Every call writes a workspace-local hook (`.agents/hooks.json`) there, and `agy_guard.py` rules on each action agy attempts:
+  - only `read_file` is allowed, and only for files inside the workspace that pass the secret checks below;
+  - running commands, writing files, web access and everything else are denied, and so is anything the hook fails on;
+  - the hook applies only to calls made by this server; your own use of agy is unaffected.
+- **Secrets stay local.** Files are refused by name (`secrets.toml`, `.env*`, certificates and private keys, cloud credentials…), by folder (`.ssh`, `.aws`…) and by content (`sk-…`, `AIza…`, GitHub/AWS/Slack/Stripe/Hugging Face/npm tokens, JWTs, private-key blocks, connection strings with passwords, hard-coded secret assignments). Errors report only the kind and line number, never the value.
+- **No accidental paid API use.** Every variable holding a key or token is removed from agy's environment. Each call also passes `--settings` to turn off the paid fallback (`useG1Credits`) and direct Gemini API access (`modelProvider`), without touching your own agy settings.
+- **Quota protection.** Quota is checked before each call (cached for 60 s). A call is refused when any bucket of the model's pool is below 10%; `neon-high` and `neon-xhigh` are refused when the Gemini five-hour bucket is below 25%.
+- **The call log stays on your machine.** `logs/YYYY-MM.jsonl` records every call actually sent (prompt, file fingerprints, answer, usage, every guard decision) and keeps 3 months. Requests refused by the security checks are not logged. `logs/` is git-ignored.
 
-## 要求
+## Requirements
 
-- Windows 10/11（安装脚本和进程管理用到了 `tasklist`、`taskkill`、`.venv\Scripts`）
+- Windows 10/11 (the installer and process handling use `tasklist`, `taskkill` and `.venv\Scripts`)
 - Python 3.10+
-- Google Antigravity CLI（`agy`），已经用有 Gemini 订阅的 Google 账号登录（在终端运行一次 `agy` 按提示登录）
-- DeepSeek API Key（只用 Gemini 的话可以不要），设为用户级环境变量 `DEEPSEEK_API_KEY`
-- Claude Code（桌面版或 CLI）
+- Google Antigravity CLI (`agy`), signed in with a Google account that has a Gemini subscription (run `agy` once in a terminal and follow the prompts)
+- A DeepSeek API key (optional if you only use Gemini), set as the user environment variable `DEEPSEEK_API_KEY`
+- Claude Code (desktop app or CLI)
 
-## 安装
+## Installation
 
 ```powershell
 git clone https://github.com/Satleixn/agent-workers-mcp.git
@@ -57,43 +57,43 @@ python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 ```
 
-然后**完全退出 Claude**，运行：
+Then **quit Claude completely** and run:
 
 ```powershell
 python install.py
 ```
 
-> 如果仓库所在的目录带有低完整性标签（某些工具的沙箱会给整个工作目录加上这个标签，用 `icacls` 能看到 `Low Mandatory Level`），从仓库里的 `.venv` 启动的程序读不到 `%LOCALAPPDATA%`，也就找不到 agy。这时把 venv 建在别处，例如 `python -m venv $HOME\.venvs\agent-workers-mcp`，再用 `python install.py --python $HOME\.venvs\agent-workers-mcp\Scripts\python.exe` 注册。
+> If the folder holding the repository carries a low-integrity label (some tools' sandboxes put one on a whole working folder; `icacls` shows `Low Mandatory Level`), programs started from the repository's `.venv` cannot read `%LOCALAPPDATA%` and so cannot find agy. Create the venv elsewhere, for example `python -m venv $HOME\.venvs\agent-workers-mcp`, and register it with `python install.py --python $HOME\.venvs\agent-workers-mcp\Scripts\python.exe`.
 
-它会备份并修改 `~/.claude.json`（加入 `mcpServers.workers`），把两个子代理复制到 `~/.claude/agents/`。重新打开 Claude 后，新会话里就有 `mcp__workers__*` 三个工具。最后，把 `docs/claude-md-snippet.md` 的内容按需加进你的 `~/.claude/CLAUDE.md`。
+The installer backs up and edits `~/.claude.json` (adding `mcpServers.workers`) and copies the two subagents into `~/.claude/agents/`. After you reopen Claude, new sessions have the three `mcp__workers__*` tools. Finally, add what you need from `docs/claude-md-snippet.md` to your `~/.claude/CLAUDE.md`.
 
-先在命令行确认两边都能用（venv 不在仓库里时，把 `.\.venv\Scripts\python` 换成你那个 venv 的 python）：
+Check both workers from the command line first (if your venv is outside the repository, replace `.\.venv\Scripts\python` with that venv's python):
 
 ```powershell
 .\.venv\Scripts\python ask_gemini.py --prompt "Reply with exactly: OK" --model gemini-4-hydrogen-low
 ```
 ```powershell
-.\.venv\Scripts\python ask_deepseek.py --prompt "用一句话说明什么是移动平均线"
+.\.venv\Scripts\python ask_deepseek.py --prompt "Explain a moving average in one sentence"
 ```
 
-## 用法
+## Usage
 
-平时直接对 Claude 说，例如：
+Just ask Claude, for example:
 
-- "让 Gemini 以读仓库模式审查 `D:\path\to\repo`，重点看错误处理"
-- "让 gemini-reviewer 审查 `src/foo.py` 里的 `bar()`"
-- "用 ask_deepseek 把这段翻成英文"
-- "查一下 Gemini 额度"
+- "Have Gemini review `D:\path\to\repo` in repo mode, focusing on error handling"
+- "Have gemini-reviewer review `bar()` in `src/foo.py`"
+- "Use ask_deepseek to translate this into English"
+- "Check the Gemini quota"
 
-模型怎么选、日志怎么查、常见报错怎么处理，见 [docs/manual.md](docs/manual.md)。
+For choosing models, reading the logs and handling common errors, see [docs/manual.md](docs/manual.md) (in Chinese).
 
-## 已知限制
+## Known limitations
 
-- 只在 Windows 上测试过。
-- Gemini 和 DeepSeek 的模型名会变，默认模型写在 `ask_gemini.py`、`ask_deepseek.py` 顶部的 `DEFAULT_MODEL`，分档表在 `workers_mcp.py` 的工具描述里。
-- 读仓库模式下 agy 不能执行命令，所以不能全文搜索；它按 `FILES.txt`（`git ls-files` 的结果）挑文件读。
-- 每次 Gemini 调用固定有约 2.5 万 token 的代理开销，小问题要合并成一次问。
+- Tested on Windows only.
+- Gemini and DeepSeek model names change. The default models are `DEFAULT_MODEL` at the top of `ask_gemini.py` and `ask_deepseek.py`; the tier table is in the tool descriptions in `workers_mcp.py`.
+- In repo mode agy cannot run commands, so it cannot search the code; it picks files to read from `FILES.txt` (the output of `git ls-files`).
+- Every Gemini call carries about 25k tokens of fixed agent overhead, so batch small questions into one call.
 
-## 许可证
+## License
 
-[MIT](LICENSE)。本项目只是调用 Antigravity CLI 和 DeepSeek API 的工具，使用时仍须遵守 Google 和 DeepSeek 各自的服务条款。
+[MIT](LICENSE). This project is only a tool that calls the Antigravity CLI and the DeepSeek API; your use of them is still subject to Google's and DeepSeek's terms of service.
