@@ -18,7 +18,7 @@
 | `agy_guard.py` | agy 的 `PreToolUse` 钩子：每次调用都强制只读 |
 | `worker_common.py` | 共用的密钥检查、大小上限、调用日志 |
 | `agents/` | 两个 Claude Code 子代理：`gemini-reviewer`（第二意见审查）、`deepseek-drafter`（起草和翻译） |
-| `docs/manual.md` | 操作说明书：用法、模型分档、日志、常见问题 |
+| `docs/manual.zh-CN.md` | 操作说明书：用法、模型分档、日志、常见问题（英文版 `docs/manual.md`） |
 | `docs/claude-md-snippet.md` | 建议加进 `~/.claude/CLAUDE.md` 的一节，告诉 Claude 什么时候交给工人 |
 | `install.py` | 注册 MCP 服务、安装子代理 |
 | `LICENSE` | MIT 许可证 |
@@ -85,7 +85,7 @@ python install.py
 - "用 ask_deepseek 把这段翻成英文"
 - "查一下 Gemini 额度"
 
-模型怎么选、日志怎么查、常见报错怎么处理，见 [docs/manual.md](docs/manual.md)。
+模型怎么选、日志怎么查、常见报错怎么处理，见 [docs/manual.zh-CN.md](docs/manual.zh-CN.md)。
 
 ## 已知限制
 

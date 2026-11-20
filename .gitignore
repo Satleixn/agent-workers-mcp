@@ -6,6 +6,7 @@ __pycache__/
 # Call logs hold prompts and answers verbatim; they never leave this machine
 logs/
 
-# Private design log and audit notes. docs/manual.md and docs/claude-md-snippet.md
-# were committed before this rule and stay tracked (ignore rules skip tracked files)
+# Private design log and audit notes. The public docs (manual.md, manual.zh-CN.md,
+# claude-md-snippet.md) are tracked and stay so (ignore rules skip tracked files);
+# add a new public file here with `git add -f`
 docs/

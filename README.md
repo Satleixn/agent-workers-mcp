@@ -18,7 +18,7 @@ An MCP server that lets Claude Code act as the lead and hand part of the work to
 | `agy_guard.py` | agy `PreToolUse` hook that makes every call read-only |
 | `worker_common.py` | Shared secret checks, size limit and call log |
 | `agents/` | Two Claude Code subagents: `gemini-reviewer` (second-opinion review) and `deepseek-drafter` (drafts and translations) |
-| `docs/manual.md` | User manual (Chinese): usage, model tiers, logs, troubleshooting |
+| `docs/manual.md` | User manual: usage, model tiers, logs, troubleshooting (Chinese: `docs/manual.zh-CN.md`) |
 | `docs/claude-md-snippet.md` | A section to add to `~/.claude/CLAUDE.md` telling Claude when to hand work to the workers |
 | `install.py` | Registers the MCP server and installs the subagents |
 | `LICENSE` | MIT license |
@@ -85,7 +85,7 @@ Just ask Claude, for example:
 - "Use ask_deepseek to translate this into English"
 - "Check the Gemini quota"
 
-For choosing models, reading the logs and handling common errors, see [docs/manual.md](docs/manual.md) (in Chinese).
+For choosing models, reading the logs and handling common errors, see [docs/manual.md](docs/manual.md).
 
 ## Known limitations
 

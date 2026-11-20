@@ -1,115 +1,117 @@
-# 操作说明书
+# User manual
 
-下文用 `<仓库>` 指你克隆本仓库的目录，用 `<仓库>\.venv\Scripts\python` 指装好依赖的 venv 里的 Python（venv 建在别处时换成那个路径）。安装步骤见 [README](../README.zh-CN.md)。
+**English** | [简体中文](manual.zh-CN.md)
 
-## 1. 日常怎么用
+Below, `<repo>` is the folder you cloned this repository into, and `<repo>\.venv\Scripts\python` is the Python of the venv with the dependencies installed (use that venv's path if you created it elsewhere). For installation, see the [README](../README.md).
 
-把 [claude-md-snippet.md](claude-md-snippet.md) 加进 `~/.claude/CLAUDE.md` 之后，Claude 会自己判断什么时候交给工人。想指定时，直接这样说：
+## 1. Everyday use
 
-| 想做的事 | 对 Claude 说 |
+Once [claude-md-snippet.md](claude-md-snippet.md) is in your `~/.claude/CLAUDE.md`, Claude decides by itself when to hand work to a worker. To choose yourself, just say so:
+
+| You want to | Say to Claude |
 |---|---|
-| 翻译、改写一段文字 | "用 ask_deepseek 把这段翻成英文" |
-| 起草文档或注释 | "让 deepseek-drafter 给 `xxx.py` 起草 README" |
-| 第二意见 | "让 gemini-reviewer 审查 `src/xxx.py` 里的 `foo()`" |
-| 读一堆文件后做总结 | "用 ask_gemini（hydrogen-medium）总结 `services/` 目录" |
-| 审查整个仓库，让 Gemini 自己挑文件 | "让 Gemini 以读仓库模式审查 `D:\…\某仓库`，重点看……" |
-| 看 Gemini 额度 | "查一下 Gemini 额度" |
-| 指定模型 | 在话里写模型名，例如"用 neon-high 审查……" |
+| Translate or rewrite some text | "Use ask_deepseek to translate this into English" |
+| Draft docs or comments | "Have deepseek-drafter draft a README for `xxx.py`" |
+| Get a second opinion | "Have gemini-reviewer review `foo()` in `src/xxx.py`" |
+| Summarise a pile of files | "Use ask_gemini (hydrogen-medium) to summarise the `services/` folder" |
+| Review a whole repository, letting Gemini pick the files | "Have Gemini review `D:\…\some-repo` in repo mode, focusing on …" |
+| See the Gemini quota | "Check the Gemini quota" |
+| Pick the model | Name it, e.g. "Use neon-high to review …" |
 
-Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些核验过、哪些没有。**工人的话只是线索。**
+After getting a result, Claude should verify it by running code or reading the source, and say which points were verified and which were not. **A worker's answer is only a lead.**
 
-### 两种给 Gemini 材料的方式
+### Two ways to give Gemini material
 
-- **`files`**：指定几个文件，复制进临时目录（保留相对路径）。总量上限 700KB（约 20 万 token）。
-- **`repo`**：把整个仓库以只读方式挂进来（`--add-dir`），临时目录里放一份文件清单 `FILES.txt`（`git ls-files` 的结果，去掉密钥文件和依赖目录），agy 按清单自己挑着读。不受 700KB 上限限制，也不往仓库里写任何东西。
+- **`files`**: a few named files, copied into a temporary directory (keeping their relative paths). Up to 700KB in total (about 200k tokens).
+- **`repo`**: the whole repository is mounted read-only (`--add-dir`), and the temporary directory gets a file list, `FILES.txt` (the output of `git ls-files`, minus secret files and dependency folders); agy picks what to read from it. No 700KB cap, and nothing is written into the repository.
 
-### 模型分档（Claude 默认按这个表选）
+### Model tiers (Claude chooses from this table by default)
 
-| 档 | 模型 | 适合 |
+| Tier | Model | Good for |
 |---|---|---|
-| 0 | Claude 自己做 | 改代码、需要你拍板的事、涉及密钥的内容、小活 |
-| 1 | `deepseek-flash`（翻译、改写用 effort `none`，起草用 `low`） | 批量文字 |
-| 2 | `gemini-4-hydrogen-low` | 分类、抽取、短摘要 |
-| 3 | `gemini-4-hydrogen-medium` | 读 10 个以上文件做总结、文档问答 |
-| 4 | `gemini-4-neon-medium`（默认） | 审查单个函数或模块 |
-| 5 | `gemini-4-neon-high` | 跨文件审查、架构评审 |
-| 6 | `gemini-4-neon-xhigh` | 数学、统计方法的正确性论证；Claude 用之前应先告诉你 |
-| 备用 | `gemini-4-argon-high` | Gemini 池额度低时代替第 5、6 档（Argon 有独立额度） |
+| 0 | Claude itself | Code changes, decisions that are yours to make, anything touching secrets, small jobs |
+| 1 | `deepseek-flash` (effort `none` for translating and rewriting, `low` for drafting) | Bulk text |
+| 2 | `gemini-4-hydrogen-low` | Classification, extraction, short summaries |
+| 3 | `gemini-4-hydrogen-medium` | Summarising 10+ files, questions about documents |
+| 4 | `gemini-4-neon-medium` (default) | Reviewing a single function or module |
+| 5 | `gemini-4-neon-high` | Cross-file review, architecture review |
+| 6 | `gemini-4-neon-xhigh` | Correctness arguments for maths and statistics; Claude should tell you before using it |
+| Fallback | `gemini-4-argon-high` | Stands in for tiers 5 and 6 when the Gemini pool runs low (Argon has its own quota) |
 
-## 2. 命令行直接用（不经过 Claude）
-
-```powershell
-<仓库>\.venv\Scripts\python <仓库>\ask_deepseek.py --prompt "把这句话翻成英文：……" --effort none
-```
-```powershell
-<仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "概括这个文件" --file 'D:\路径\a.py' --model gemini-4-hydrogen-low
-```
-```powershell
-<仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "说明这个仓库的模块结构" --repo 'D:\路径\某仓库' --model gemini-4-hydrogen-medium
-```
-```powershell
-<仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --quota
-```
-
-回答打印在 stdout；用量、调用 id、守门钩子拒绝了哪些操作打印在 stderr。`--file` 可以写多次。DeepSeek 另有 `--system "..."`、`--json`（要求返回 JSON）。
-
-## 3. 查看原始输入和输出
-
-每次**真正发出去**的调用（成功或失败）都在 `<仓库>\logs\YYYY-MM.jsonl` 里记一行：实际发出的提示词、文件指纹（路径、大小、sha256）、完整回答或错误、用量、耗时。
-
-- Gemini 另记 `agy_transcript`（agy 自己的完整记录，含思考过程和每一步操作）、`tool_calls`（钩子对 agy 每次操作的判定）、读仓库模式下的 `repo`。
-- DeepSeek 另记思考内容 `reasoning` 和是否在高峰时段 `peak`。
-
-MCP 结果第一行末尾有 `id=…`，按 id 查：
+## 2. Command-line use (without Claude)
 
 ```powershell
-$id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filter '*.jsonl' | Select-String -SimpleMatch $id | ForEach-Object { $_.Line | ConvertFrom-Json } | Format-List
+<repo>\.venv\Scripts\python <repo>\ask_deepseek.py --prompt "Translate into French: ..." --effort none
+```
+```powershell
+<repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Summarise this file" --file 'D:\path\a.py' --model gemini-4-hydrogen-low
+```
+```powershell
+<repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Describe this repository's module structure" --repo 'D:\path\some-repo' --model gemini-4-hydrogen-medium
+```
+```powershell
+<repo>\.venv\Scripts\python <repo>\ask_gemini.py --quota
 ```
 
-- 被安全检查拒绝的请求**不记录**（它可能正好含有密钥）。
-- 只保留最近 3 个月的日志文件，更早的在写日志时自动删除。`logs/` 不进 git。
-- agy 自己在 `~/.gemini/antigravity-cli/` 里也留有记录，由 agy 自己管理，本工具不删也不写。
+The answer goes to stdout; usage, the call id and any actions the guard hook refused go to stderr. `--file` can be given several times. DeepSeek also takes `--system "..."` and `--json` (asks for a JSON reply).
 
-## 4. 安全规则（写在代码里，Claude 绕不过去）
+## 3. Inspecting the raw inputs and outputs
 
-- **按文件名和位置拒绝**：`secrets.toml`、各种 `.env`、证书和私钥（`*.pem`、`*.key`、`*.p12`、`*.pfx`、`*.jks`、`id_rsa*` 等）、`credentials.json`、`service_account*.json`、`.netrc`、`.npmrc`、`.pypirc`、`.git-credentials`、`.claude.json`；`.streamlit`、`.ssh`、`.aws`、`.kube`、`.gnupg`、`.azure`、`.gcloud` 目录下的文件；`~/.gemini` 和本仓库 `logs/` 里的任何文件。
-- **按内容拒绝**：文件内容、提示词、system 提示里出现像 Key 的内容就拒绝。包括各家 Key 和令牌的格式、JWT、`Bearer` 长串、私钥块、带密码的连接串、`xxx_api_key = "长串"` 和 `.env`/YAML 里的无引号写法。变量名以 `_path`、`_file`、`_dir`、`_url`、`_name` 结尾的赋值不算（它们存的是位置）。报错只说类型和行号。
-- **Gemini 只读**：每次调用都在临时目录装上守门钩子 `agy_guard.py`。它只放行工作区内、通过上面检查的 `read_file`；执行命令、写文件、访问网页等一律拒绝；钩子自己出错也拒绝。仅靠 `--mode plan` 和空临时目录并不够：实测 agy 仍能读到工作区外的文件，所以需要钩子。
-- **不会误走付费 API**：传给 agy 的环境变量去掉了所有名字里带 key、token、secret、password、credential 的变量。每次调用还通过 `--settings` 强制设定 `useG1Credits: false`（订阅额度用完后不改用付费 AI credits）和 `modelProvider: ""`（不直连 Gemini API）。这些设定只对本工具的调用生效，不写入你的 agy 设置。斜杠命令也已禁用。
-- **哪些仓库可以发**：由你的 CLAUDE.md 决定（见 snippet 的 Privacy 一行）。代码只守密钥这条底线，不限制目录。
+Every call that is **actually sent** (successful or not) adds one line to `<repo>\logs\YYYY-MM.jsonl`: the prompt as sent, file fingerprints (path, size, sha256), the full answer or error, usage and elapsed time.
 
-## 5. 费用、额度和时间
+- Gemini calls also record `agy_transcript` (agy's own full record, including its thinking and every step), `tool_calls` (the guard's decision on each action agy tried), `repo` in repo mode, and `quota_check`.
+- DeepSeek calls also record the thinking text `reasoning` and whether the call fell in peak hours (`peak`).
 
-- **Gemini**：只用订阅额度。Neon、Hydrogen 共用一个池（周额度 + 5 小时额度），Argon 单独一个周额度池。每次调用固定约 2.5 万 token 的代理开销。
-  - 每次调用前，代码会自动按模型所在的额度池查一次额度（结果缓存 60 秒，查额度不耗额度）：池里任何一项低于 10% 就拒绝调用，由 Claude 自己做；Gemini 5 小时额度低于 25% 时拒绝 neon-high 和 xhigh，报错里建议改用 argon-high（独立额度）或 neon-medium。查额度本身失败时照常调用。被额度拒绝的调用不记日志。
-  - 单次时间上限是本工具设的（agy 默认不限时）：MCP 调用 15 分钟，命令行 9 分钟（低于 Claude 的 Shell 工具 10 分钟上限）。neon-high 读 100KB 以上材料时光思考就常要 3 分钟以上，用 neon-high、xhigh、argon 时每次的材料最好控制在 150KB 以内。
-  - 在 Claude 里按 Esc 会立即结束 agy，不再消耗额度。
-- **DeepSeek**：按 token 计费，思考 token 按输出计费。官方在工作日 01:00–04:00 和 06:00–10:00（UTC）收双倍价格，这段时间调用时结果第一行末尾会标 `PEAK-2x-price`。价格以 DeepSeek 官网为准。
+The first line of an MCP result ends with `id=…`. To look a call up by id:
 
-## 6. 常见问题
+```powershell
+$id = 'paste the id here'; Get-ChildItem -LiteralPath '<repo>\logs' -Filter '*.jsonl' | Select-String -SimpleMatch $id | ForEach-Object { $_.Line | ConvertFrom-Json } | Format-List
+```
 
-| 现象 | 处理 |
+- Requests refused by the security checks are **not logged** (they may contain the very secret that was caught).
+- Only the last 3 months of log files are kept; older ones are deleted when a call is logged. `logs/` is git-ignored.
+- agy keeps its own records under `~/.gemini/antigravity-cli/`. agy manages them; this tool neither deletes nor writes them.
+
+## 4. Security rules (in the code, so Claude cannot get around them)
+
+- **Refused by name and location**: `secrets.toml`, every kind of `.env`, certificates and private keys (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `id_rsa*` and so on), `credentials.json`, `service_account*.json`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.claude.json`; files under `.streamlit`, `.ssh`, `.aws`, `.kube`, `.gnupg`, `.azure` and `.gcloud` folders; anything in `~/.gemini` or in this repository's `logs/`.
+- **Refused by content**: anything that looks like a key in file contents, the prompt or the system prompt. This covers the key and token formats of the major providers, JWTs, long `Bearer` strings, private-key blocks, connection strings with passwords, `xxx_api_key = "long string"`, and the unquoted forms in `.env` and YAML files. Assignments to names ending in `_path`, `_file`, `_dir`, `_url` or `_name` do not count (they hold locations). Errors give only the kind and the line number.
+- **Gemini is read-only**: each call installs the guard hook `agy_guard.py` in its temporary directory. It allows only `read_file` on files inside the workspace that pass the checks above; running commands, writing files, web access and everything else are denied, and so is anything the hook fails on. `--mode plan` plus an empty temporary directory is not enough on its own: in tests agy still read files outside the workspace, hence the hook.
+- **No accidental paid API use**: every variable whose name contains key, token, secret, password or credential is removed from agy's environment. Each call also uses `--settings` to force `useG1Credits: false` (no paid AI credits once the subscription quota runs out) and `modelProvider: ""` (no direct Gemini API). These settings apply only to this tool's calls and are never written to your agy settings. Slash commands are disabled too.
+- **Which repositories may be sent** is decided by your CLAUDE.md (see the Privacy line in the snippet). The code enforces only the no-secrets rule and does not restrict folders.
+
+## 5. Cost, quota and time
+
+- **Gemini** uses subscription quota only. Neon and Hydrogen share one pool (a weekly and a five-hour allowance); Argon has a separate weekly pool. Every call carries about 25k tokens of fixed agent overhead.
+  - Before each call the code checks the quota of the model's pool (cached for 60 s; checking spends no quota). If any bucket in the pool is below 10% the call is refused and Claude does the work itself. If the Gemini five-hour bucket is below 25%, neon-high and xhigh are refused and the error suggests argon-high (separate quota) or neon-medium. If the quota check itself fails, the call goes ahead. Calls refused for quota are not logged.
+  - The time limit per call is set by this tool (agy has none by default): 15 minutes through MCP, 9 minutes on the command line (under the 10-minute limit of Claude's shell tool). neon-high often spends 3+ minutes just thinking about 100KB+ of material, so with neon-high, xhigh or argon keep each call under about 150KB.
+  - Pressing Esc in Claude stops agy at once, so no more quota is spent.
+- **DeepSeek** is billed per token, and thinking tokens are billed as output. DeepSeek charges double on weekdays 01:00–04:00 and 06:00–10:00 UTC; calls in those hours have `PEAK-2x-price` at the end of the result's first line. DeepSeek's website has the current prices.
+
+## 6. Troubleshooting
+
+| Symptom | What to do |
 |---|---|
-| 新会话里没有 `mcp__workers__*` 工具 | 确认 `~/.claude.json` 里有 `mcpServers.workers`；完全退出 Claude 再打开 |
-| 改了代码，但行为没变 | MCP 服务在 Claude 启动时加载代码，改完要重启 Claude。命令行不用重启 |
-| 新建或修改了子代理文件，没生效 | 子代理只在会话启动时加载，开新会话 |
-| Gemini 报找不到 agy | 在终端运行 `agy --version`；不行就重装 Antigravity CLI |
-| Gemini 报登录或权限问题 | 在终端运行 `agy`，按提示用 Google 账号重新登录 |
-| `failed to start conversation` | agy 偶发的本地启动问题，发生在调用模型之前，不耗额度。脚本会自动重试一次 |
-| `print timeout … the response is partial` | 超过时间上限。换小一档模型或拆分材料，不要原样重试：耗时主要在思考上 |
-| `prompt too long for the Windows command line` | 提示词超过约 3.2 万字符。把材料写进文件，用 `files` 传 |
-| `model … is not allowed` | 以 `-` 开头的模型名和 orchestrator 模型被拒；从分档表里选 |
-| `Gemini quota low` 或 `needs the Gemini five-hour quota` | 额度不够，按报错换模型，或者等重置时间过后再用 |
-| `invalid model selection` | 模型名写错了；运行 `agy models` 看当前可用的名字 |
-| 结果第一行有 `denied=N` | 守门钩子拒绝了 agy 的 N 次操作；在日志的 `tool_calls` 里看具体是哪些、为什么 |
-| 一个文件被 "looks like a … key" 拒绝 | 先看报错里的行号确认是不是真 Key。真 Key：从代码里移走并轮换；误报：只发其他文件，或者让 Claude 自己读 |
-| `DEEPSEEK_API_KEY is not set` | 设成用户级环境变量后重启 Claude |
-| DeepSeek 报 401 | Key 错误或已失效 |
-| 503、504 | 服务端过载。Claude 应当自己做，不反复重试 |
+| No `mcp__workers__*` tools in a new session | Check that `~/.claude.json` has `mcpServers.workers`; quit Claude completely and reopen it |
+| Code changed but behaviour did not | The MCP server loads the code when Claude starts, so restart Claude. The command line needs no restart |
+| A new or edited subagent file has no effect | Subagents load when a session starts; open a new session |
+| Gemini cannot find agy | Run `agy --version` in a terminal; reinstall the Antigravity CLI if that fails |
+| Gemini reports a sign-in or permission problem | Run `agy` in a terminal and sign in again with your Google account |
+| `failed to start conversation` | An occasional local start-up problem in agy, before any model call, so no quota is spent. The script retries once automatically |
+| `print timeout … the response is partial` | The time limit was reached. Use a lower tier or split the material; don't retry the same call, since the time goes into thinking |
+| `prompt too long for the Windows command line` | The prompt is over about 32,000 characters. Put the material in files and pass them with `files` |
+| `model … is not allowed` | Model names starting with `-` and orchestrator models are refused; pick one from the tier table |
+| `Gemini quota low` or `needs the Gemini five-hour quota` | Not enough quota. Switch model as the error suggests, or wait until the reset time |
+| `invalid model selection` | Wrong model name; run `agy models` for the current names |
+| The result's first line has `denied=N` | The guard hook refused N of agy's actions; the log's `tool_calls` shows which ones and why |
+| A file is refused with "looks like a … key" | Check the line number in the error to see whether it is a real key. A real key: move it out of the code and rotate it. A false positive: send only the other files, or let Claude read it |
+| `DEEPSEEK_API_KEY is not set` | Set it as a user environment variable, then restart Claude |
+| DeepSeek returns 401 | The key is wrong or no longer valid |
+| 503 or 504 | The service is overloaded. Claude should do the work itself rather than keep retrying |
 
-## 7. 维护
+## 7. Maintenance
 
-- **不要随手升级 `mcp` 包**：mcp 1.x 到 2.x 改过接口（`FastMCP` 改名为 `MCPServer`），大版本升级先单独测试。
-- **agy 更新**：`agy update`，之后跑一次 `ask_gemini.py --prompt "Reply with exactly: OK" --model gemini-4-hydrogen-low` 确认还能用。
-- **模型改名**：改 `ask_gemini.py`、`ask_deepseek.py` 顶部的 `DEFAULT_MODEL`，以及 `workers_mcp.py` 工具描述里的分档表，然后重启 Claude。
-- **停用**：退出 Claude 后从 `~/.claude.json` 删掉 `mcpServers.workers`，再删掉 CLAUDE.md 里那一节和 `~/.claude/agents/` 下的两个子代理文件。
+- **Don't upgrade the `mcp` package casually**: its interface changed between 1.x and 2.x (`FastMCP` became `MCPServer`), so test a major upgrade on its own first.
+- **Updating agy**: run `agy update`, then `ask_gemini.py --prompt "Reply with exactly: OK" --model gemini-4-hydrogen-low` to confirm it still works.
+- **Renamed models**: change `DEFAULT_MODEL` at the top of `ask_gemini.py` and `ask_deepseek.py`, and the tier table in the tool descriptions in `workers_mcp.py`, then restart Claude.
+- **Uninstalling**: after quitting Claude, remove `mcpServers.workers` from `~/.claude.json`, then remove the section from your CLAUDE.md and the two subagent files in `~/.claude/agents/`.
