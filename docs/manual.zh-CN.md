@@ -53,7 +53,7 @@ Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些�
 <仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --quota
 ```
 
-回答打印在 stdout；用量、调用 id、守门钩子拒绝了哪些操作打印在 stderr。`--file` 可以写多次。DeepSeek 另有 `--system "..."`、`--json`（要求返回 JSON）。
+回答打印在 stdout；用量、调用 id、守门钩子拒绝了哪些操作打印在 stderr。`--file` 可以写多次。`--timeout` 设时间上限（秒）：默认 540，保证在前台运行时不超过 Claude Shell 工具的 10 分钟上限；长审查请放在后台运行，并加上 `--timeout 3600`。DeepSeek 另有 `--system "..."`、`--json`（要求返回 JSON）。
 
 ## 3. 查看原始输入和输出
 
@@ -84,7 +84,8 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 
 - **Gemini**：只用订阅额度。Neon、Hydrogen 共用一个池（周额度 + 5 小时额度），Argon 单独一个周额度池。每次调用固定约 2.5 万 token 的代理开销。
   - 每次调用前，代码会自动按模型所在的额度池查一次额度（结果缓存 60 秒，查额度不耗额度）：池里任何一项低于 10% 就拒绝调用，由 Claude 自己做；Gemini 5 小时额度低于 25% 时拒绝 neon-high 和 xhigh，报错里建议改用 argon-high（独立额度）或 neon-medium。查额度本身失败时照常调用。被额度拒绝的调用不记日志。
-  - 单次时间上限是本工具设的（agy 默认不限时）：MCP 调用 15 分钟，命令行 9 分钟（低于 Claude 的 Shell 工具 10 分钟上限）。neon-high 读 100KB 以上材料时光思考就常要 3 分钟以上，用 neon-high、xhigh、argon 时每次的材料最好控制在 150KB 以内。
+  - 单次时间上限是本工具设的（agy 默认不限时）：MCP 调用 1 小时；命令行默认 9 分钟（低于 Claude 的 Shell 工具 10 分钟上限），在后台运行并加 `--timeout 3600` 时可以到 1 小时。用 neon-high、xhigh 读仓库审查用过约 15 分钟，网络断连时 agy 还可能多耗几分钟才重试。用 neon-high、xhigh、argon 时每次的材料仍然最好控制在 150KB 以内。
+  - 查额度用 `agy /quota`，有自己的 60 秒上限，不会等正在进行的调用。
   - 在 Claude 里按 Esc 会立即结束 agy，不再消耗额度。
 - **DeepSeek**：按 token 计费，思考 token 按输出计费。官方在工作日 01:00–04:00 和 06:00–10:00（UTC）收双倍价格，这段时间调用时结果第一行末尾会标 `PEAK-2x-price`。价格以 DeepSeek 官网为准。
 
@@ -98,7 +99,7 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 | Gemini 报找不到 agy | 在终端运行 `agy --version`；不行就重装 Antigravity CLI |
 | Gemini 报登录或权限问题 | 在终端运行 `agy`，按提示用 Google 账号重新登录 |
 | `failed to start conversation` | agy 偶发的本地启动问题，发生在调用模型之前，不耗额度。脚本会自动重试一次 |
-| `print timeout … the response is partial` | 超过时间上限。换小一档模型或拆分材料，不要原样重试：耗时主要在思考上 |
+| `print timeout … the response is partial` | 超过时间上限。先看日志里的 `agy_transcript`：长时间空档之后跟着一步 `ERROR_MESSAGE`，说明是网络断了，可以重试一次。否则换小一档模型或拆分材料，因为耗时主要在思考上 |
 | `prompt too long for the Windows command line` | 提示词超过约 3.2 万字符。把材料写进文件，用 `files` 传 |
 | `model … is not allowed` | 以 `-` 开头的模型名和 orchestrator 模型被拒；从分档表里选 |
 | `Gemini quota low` 或 `needs the Gemini five-hour quota` | 额度不够，按报错换模型，或者等重置时间过后再用 |

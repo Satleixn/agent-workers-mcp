@@ -53,7 +53,7 @@ After getting a result, Claude should verify it by running code or reading the s
 <repo>\.venv\Scripts\python <repo>\ask_gemini.py --quota
 ```
 
-The answer goes to stdout; usage, the call id and any actions the guard hook refused go to stderr. `--file` can be given several times. DeepSeek also takes `--system "..."` and `--json` (asks for a JSON reply).
+The answer goes to stdout; usage, the call id and any actions the guard hook refused go to stderr. `--file` can be given several times. `--timeout` sets the time limit in seconds: the default of 540 keeps a foreground run under the 10-minute limit of Claude's shell tool; for long reviews start the script in the background with `--timeout 3600`. DeepSeek also takes `--system "..."` and `--json` (asks for a JSON reply).
 
 ## 3. Inspecting the raw inputs and outputs
 
@@ -84,7 +84,8 @@ $id = 'paste the id here'; Get-ChildItem -LiteralPath '<repo>\logs' -Filter '*.j
 
 - **Gemini** uses subscription quota only. Neon and Hydrogen share one pool (a weekly and a five-hour allowance); Argon has a separate weekly pool. Every call carries about 25k tokens of fixed agent overhead.
   - Before each call the code checks the quota of the model's pool (cached for 60 s; checking spends no quota). If any bucket in the pool is below 10% the call is refused and Claude does the work itself. If the Gemini five-hour bucket is below 25%, neon-high and xhigh are refused and the error suggests argon-high (separate quota) or neon-medium. If the quota check itself fails, the call goes ahead. Calls refused for quota are not logged.
-  - The time limit per call is set by this tool (agy has none by default): 15 minutes through MCP, 9 minutes on the command line (under the 10-minute limit of Claude's shell tool). neon-high often spends 3+ minutes just thinking about 100KB+ of material, so with neon-high, xhigh or argon keep each call under about 150KB.
+  - The time limit per call is set by this tool (agy has none by default): 1 hour through MCP; on the command line 9 minutes by default (under the 10-minute limit of Claude's shell tool), up to 1 hour with `--timeout 3600` when run in the background. Repository reviews on neon-high or xhigh have taken up to about 15 minutes, and a dropped connection can cost agy several more minutes before it retries. With neon-high, xhigh or argon still keep each call under about 150KB.
+  - The quota check runs `agy /quota` with its own 60-second limit and does not wait for a call already in progress.
   - Pressing Esc in Claude stops agy at once, so no more quota is spent.
 - **DeepSeek** is billed per token, and thinking tokens are billed as output. DeepSeek charges double on weekdays 01:00–04:00 and 06:00–10:00 UTC; calls in those hours have `PEAK-2x-price` at the end of the result's first line. DeepSeek's website has the current prices.
 
@@ -98,7 +99,7 @@ $id = 'paste the id here'; Get-ChildItem -LiteralPath '<repo>\logs' -Filter '*.j
 | Gemini cannot find agy | Run `agy --version` in a terminal; reinstall the Antigravity CLI if that fails |
 | Gemini reports a sign-in or permission problem | Run `agy` in a terminal and sign in again with your Google account |
 | `failed to start conversation` | An occasional local start-up problem in agy, before any model call, so no quota is spent. The script retries once automatically |
-| `print timeout … the response is partial` | The time limit was reached. Use a lower tier or split the material; don't retry the same call, since the time goes into thinking |
+| `print timeout … the response is partial` | The time limit was reached. Check agy's record (`agy_transcript` in the log) for an `ERROR_MESSAGE` step after a long gap: that is a network drop, and retrying once is fine. Otherwise use a lower tier or split the material, since the time went into thinking |
 | `prompt too long for the Windows command line` | The prompt is over about 32,000 characters. Put the material in files and pass them with `files` |
 | `model … is not allowed` | Model names starting with `-` and orchestrator models are refused; pick one from the tier table |
 | `Gemini quota low` or `needs the Gemini five-hour quota` | Not enough quota. Switch model as the error suggests, or wait until the reset time |

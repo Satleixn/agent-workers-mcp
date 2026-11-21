@@ -19,11 +19,13 @@ Each call costs ~25k input tokens of agent overhead, so batch small questions in
 
 Usage:
   python ask_gemini.py --prompt "task" [--file a.py --file b.md] [--repo D:\\path\\to\\repo] [--model ...]
+                       [--timeout 3600]   (long runs: start it in the background; the default suits the foreground)
   python ask_gemini.py --quota
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -38,8 +40,16 @@ from pathlib import Path
 from worker_common import WorkerError, check_files, check_text, file_records, is_denied_path, log_call
 
 DEFAULT_MODEL = "gemini-4-neon-medium"
-# neon-high reviewing 100KB+ of input can think for 3+ minutes; 540 + 30 s stays under a shell tool's 10-minute cap.
-PRINT_TIMEOUT_S = 540
+# Time limit for one call. Repository reviews on neon-high/xhigh have taken up to ~15 minutes, and agy can lose
+# several more to a dropped connection before it retries (2026-11-21), so the MCP server allows an hour.
+PRINT_TIMEOUT_S = 3600
+# The command line defaults to less: 540 + 30 s ends under a shell tool's 10-minute foreground cap, so the script
+# still stops agy itself if it is run in the foreground. Run it in the background with --timeout 3600 for long reviews.
+CLI_TIMEOUT_S = 540
+# The quota query needs no model call; a short limit keeps a stalled one from holding up the call behind it.
+QUOTA_TIMEOUT_S = 60
+# Our child processes get a hidden console instead of a new visible one when the parent has none.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 READ_ONLY_NOTE = (
     "The files in your working directory are reference material: read them only, "
     "do not modify, create or delete files, and do not run commands.\n"
@@ -91,7 +101,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     """Stop agy and every process it started; on Windows proc.kill() alone would leave its children running."""
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       stdin=subprocess.DEVNULL, capture_output=True)
+                       stdin=subprocess.DEVNULL, capture_output=True, creationflags=_NO_WINDOW)
     if proc.poll() is None:
         proc.kill()
 
@@ -119,29 +129,32 @@ class Cancel:
             _kill_tree(proc)
 
 
-def _run_agy(args: list[str], cwd: str, cancel: Cancel | None = None, wait_s: int = PRINT_TIMEOUT_S + 30) -> dict:
+def _run_agy(args: list[str], cwd: str, cancel: Cancel | None = None, wait_s: int = PRINT_TIMEOUT_S + 30,
+             lock: bool = True) -> dict:
     """Run agy in print mode with JSON output and return the parsed result object.
 
     Retries once when agy cannot create its local conversation ("its database was initialized by another opener",
     seen 2026-11-20): that happens before any model call, spends no quota, and a fresh start succeeds.
     """
     try:
-        return _run_agy_once(args, cwd, cancel, wait_s)
+        return _run_agy_once(args, cwd, cancel, wait_s, lock)
     except WorkerError as e:
         if START_FAILURE not in str(e):
             raise
         print("agy failed to start a conversation; retrying once", file=sys.stderr)
-        return _run_agy_once(args, cwd, cancel, wait_s)
+        return _run_agy_once(args, cwd, cancel, wait_s, lock)
 
 
-def _run_agy_once(args: list[str], cwd: str, cancel: Cancel | None = None, wait_s: int = PRINT_TIMEOUT_S + 30) -> dict:
-    """One agy run in print mode with JSON output; returns the parsed result object."""
+def _run_agy_once(args: list[str], cwd: str, cancel: Cancel | None = None, wait_s: int = PRINT_TIMEOUT_S + 30,
+                  lock: bool = True) -> dict:
+    """One agy run in print mode with JSON output; returns the parsed result object. `lock=False` skips the
+    one-at-a-time lock, for runs that start no conversation (the quota query)."""
     cmd = [_agy(), *args, "--settings", AGY_SETTINGS, "--output-format", "json"]
     if len(subprocess.list2cmdline(cmd)) > MAX_CMDLINE_CHARS:
         raise WorkerError(f"prompt too long for the Windows command line (limit about {MAX_CMDLINE_CHARS} "
                           "characters); put the material in files instead")
     env = {k: v for k, v in os.environ.items() if not _SECRET_ENV.search(k)}
-    with _agy_lock:
+    with _agy_lock if lock else contextlib.nullcontext():
         if cancel is not None and cancel.cancelled:
             raise WorkerError("cancelled before agy started")
         try:
@@ -155,6 +168,7 @@ def _run_agy_once(args: list[str], cwd: str, cancel: Cancel | None = None, wait_
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=_NO_WINDOW,
             )
         except OSError as e:
             raise WorkerError(f"could not start agy: {e.strerror}")
@@ -245,7 +259,7 @@ def _repo_index(repo: Path) -> list[str]:
     and dependency folders. The guard still checks every file agy actually reads."""
     try:
         out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"], capture_output=True, check=True,
-                             stdin=subprocess.DEVNULL).stdout.decode("utf-8", errors="replace")
+                             stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW).stdout.decode("utf-8", errors="replace")
         rels = [r for r in out.split("\0") if r]
     except (OSError, subprocess.CalledProcessError):
         rels = []
@@ -268,7 +282,7 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
                timeout_s: int = PRINT_TIMEOUT_S, repo: str | None = None) -> dict:
     """Run one prompt; return {"text", "model", "elapsed_s", "usage", "call_id"}. Raises WorkerError on any failure.
     `cancel` lets another thread stop the call (the MCP server uses it when the client cancels). `timeout_s` is
-    agy's own limit; the command line keeps PRINT_TIMEOUT_S, the MCP server passes a longer one. `repo` mounts a
+    agy's own limit (the command line passes --timeout, CLI_TIMEOUT_S by default). `repo` mounts a
     repository read-only for agy to explore (see the module docstring)."""
     model = model or DEFAULT_MODEL
     if model.startswith("-") or "orchestrator" in model:
@@ -338,7 +352,10 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
 def gemini_quota() -> list[dict]:
     """Remaining subscription quota per bucket; this query itself spends no quota."""
     with tempfile.TemporaryDirectory(prefix="agy_", ignore_cleanup_errors=True) as work:
-        result = _run_agy(["--print=/quota"], cwd=work)
+        # No lock: /quota starts no conversation, so it cannot race agy's conversation database, and a long call
+        # in progress must not hold up the quota check of the call queued behind it.
+        result = _run_agy(["--print=/quota", "--print-timeout", f"{QUOTA_TIMEOUT_S}s"], cwd=work,
+                          wait_s=QUOTA_TIMEOUT_S + 30, lock=False)
     rows = []
     for group in result.get("command", {}).get("data", {}).get("groups", []):
         for b in group.get("buckets", []):
@@ -394,6 +411,9 @@ def main() -> int:
     ap.add_argument("--file", action="append", default=[])
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--repo", help="mount this repository read-only and let agy pick the files to read")
+    ap.add_argument("--timeout", type=int, default=CLI_TIMEOUT_S,
+                    help=f"seconds before agy is stopped (default {CLI_TIMEOUT_S}, under a shell tool's 10-minute "
+                         f"foreground cap; up to {PRINT_TIMEOUT_S} when run in the background)")
     ap.add_argument("--quota", action="store_true", help="print remaining quota and exit")
     a = ap.parse_args()
     try:
@@ -403,7 +423,7 @@ def main() -> int:
             return 0
         if not a.prompt:
             ap.error("--prompt is required unless --quota is given")
-        out = ask_gemini(a.prompt, a.file, a.model, repo=a.repo)
+        out = ask_gemini(a.prompt, a.file, a.model, timeout_s=a.timeout, repo=a.repo)
     except WorkerError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

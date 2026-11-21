@@ -15,9 +15,6 @@ from ask_gemini import Cancel, ask_gemini as _ask_gemini, gemini_quota as _gemin
 from worker_common import WorkerError
 
 server = MCPServer("workers")
-# The MCP path has no 10-minute shell cap (Claude Code's MCP timeout is ~28 h) and Esc stops agy at once,
-# so it waits longer than the command line's 540 s (user decision 2026-11-20).
-MCP_PRINT_TIMEOUT_S = 900
 
 
 def _with_meta(out: dict, extra: str = "") -> str:
@@ -52,7 +49,8 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     refused, do the work yourself and tell the user; Gemini five-hour bucket under 25% -> neon-high/xhigh are
     refused, retry with gemini-4-argon-high (separate quota) or gemini-4-neon-medium as the error suggests.
     Each call carries ~25k tokens of agent overhead, so batch small questions into one call.
-    A call can take up to ~15 minutes: neon-high on 100KB+ of input often thinks for 3+ minutes. Files may total
+    A call can take up to an hour (Esc stops it at once): neon-high on 100KB+ of input often thinks for 3+
+    minutes, and repository reviews on neon-high/xhigh have taken up to ~15. Files may total
     700KB, but for neon-high, neon-xhigh or argon keep each call under ~150KB and split larger reviews by module.
     After a timeout, drop a level or split the input instead of retrying the same call.
     Do not hand over code changes, user decisions or anything involving secrets.
@@ -63,7 +61,7 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     cancel = Cancel()
     try:
         out = await anyio.to_thread.run_sync(
-            lambda: _ask_gemini(prompt, files, model, cancel=cancel, timeout_s=MCP_PRINT_TIMEOUT_S, repo=repo),
+            lambda: _ask_gemini(prompt, files, model, cancel=cancel, repo=repo),
             abandon_on_cancel=True)
     except anyio.get_cancelled_exc_class():
         cancel.cancel()
