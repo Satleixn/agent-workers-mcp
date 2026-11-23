@@ -30,8 +30,10 @@ DENY_NAMES = (
 )
 # Matched case-insensitively against every directory name in the resolved path.
 DENY_DIRS = (".streamlit", ".ssh", ".aws", ".kube", ".gnupg", ".azure", ".gcloud")
-# Whole trees holding raw worker traffic or agent state: agy's data and our own call logs.
-DENY_TREES = ((Path.home() / ".gemini").resolve(), LOG_DIR)
+# agy's home for our own runs (ask_gemini passes it with --gemini_dir), apart from the user's ~/.gemini.
+AGY_HOME = Path.home() / ".agent-workers" / "agy-home"
+# Whole trees holding raw worker traffic or agent state: agy's data (the user's and ours) and our own call logs.
+DENY_TREES = ((Path.home() / ".gemini").resolve(), AGY_HOME.resolve(), LOG_DIR)
 
 # A variable that holds a secret. A name ending in _path/_file/_dir/_url/_name holds where a secret lives,
 # not the secret (secrets_path = ".streamlit/secrets.toml"); the key-format patterns still check its value.

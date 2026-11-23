@@ -6,6 +6,9 @@ applies only to our own agy runs (a global hook would change the user's own agy 
 For each tool call agy wants to make:
   read_file  allowed only for a file under one of the configured roots that passes the same secret checks as
              files we send ourselves (name and directory denylist, content scan, size limit);
+  finish     allowed only when guard.json lists it under "results" (structured calls): with --json-schema, agy
+             submits the structured result through it (no side effects; denying it made the model repeat the JSON
+             as text, tested 2026-11-23);
   anything else (run_command, file writes, web access, ...) is denied.
 Any error in this script also ends in a denial: agy treats a failed hook as a block (tested 2026-11-20), and the
 script prints an explicit deny before exiting when it can.
@@ -22,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from worker_common import WorkerError, check_files  # noqa: E402
 
 READ_TOOLS = {"read_file"}
+RESULT_TOOLS = {"finish"}  # the only tools "results" may enable
 
 
 def decide(payload: dict, cfg: dict) -> tuple[str, str, str | None]:
@@ -29,6 +33,8 @@ def decide(payload: dict, cfg: dict) -> tuple[str, str, str | None]:
     call = payload.get("toolCall") or {}
     name = call.get("name") or ""
     args = call.get("args") or {}
+    if name in RESULT_TOOLS and name in (cfg.get("results") or []):
+        return "allow", "", None
     if name not in READ_TOOLS:
         return "deny", f"{name or 'this tool'} is not allowed: this is a read-only review", None
     raw = args.get("Path")
@@ -38,7 +44,9 @@ def decide(payload: dict, cfg: dict) -> tuple[str, str, str | None]:
     roots = [Path(r).resolve() for r in cfg["roots"]]
     if not any(path.is_relative_to(root) for root in roots):
         return "deny", "outside the workspace", str(path)
-    if path.is_relative_to(Path(cfg["guard_dir"]).resolve()):
+    # "guard_dir" is the older single-entry form, still written by a server started before the update.
+    hidden = [Path(p).resolve() for p in cfg.get("deny") or [cfg["guard_dir"]]]
+    if any(path.is_relative_to(p) for p in hidden):
         return "deny", "the review's own configuration is not readable", str(path)
     try:
         check_files([path])

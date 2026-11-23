@@ -1,9 +1,11 @@
-"""Register the "workers" MCP server in ~/.claude.json and install the two subagents into ~/.claude/agents.
+"""Register the "workers" MCP server in ~/.claude.json, install the two subagents into ~/.claude/agents and the
+lead-only skills into ~/.claude/skills.
 
 Run it with any Python, while no Claude app or Claude Code session is open: they rewrite ~/.claude.json and could
 overwrite this change. It makes a timestamped backup first, writes atomically, and stores no API key (the server
 inherits DEEPSEEK_API_KEY from the user environment). Existing subagent files that differ are backed up before they
-are replaced.
+are replaced; a skill folder that differs is moved to ~/.claude/backups (inside ~/.claude/skills it would load
+as a second copy of the skill).
 
 Prerequisite: a virtual environment with requirements.txt installed. By default it is .venv in this folder; pass
 --python <path to that venv's python.exe> to use one elsewhere (needed when this folder carries a low-integrity
@@ -22,6 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CONFIG = Path.home() / ".claude.json"
 AGENTS_DIR = Path.home() / ".claude" / "agents"
+SKILLS_DIR = Path.home() / ".claude" / "skills"
+BACKUP_DIR = Path.home() / ".claude" / "backups"
 
 
 def claude_running() -> bool:
@@ -42,6 +46,33 @@ def install_agents(stamp: str) -> None:
         print(f"subagent {src.stem}: installed")
 
 
+def _tree(folder: Path) -> dict[str, bytes]:
+    return {p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+
+def install_skills(stamp: str) -> None:
+    if not (ROOT / "skills").is_dir():
+        return
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    for src in sorted(p for p in (ROOT / "skills").iterdir() if (p / "SKILL.md").is_file()):
+        dest = SKILLS_DIR / src.name
+        if dest.is_dir() and not dest.is_symlink() and _tree(dest) == _tree(src):
+            print(f"skill {src.name}: up to date")
+            continue
+        if dest.is_symlink():  # also a broken one, which exists() does not see
+            dest.unlink()
+        elif dest.exists():
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            backup = BACKUP_DIR / f"skill-{src.name}-{stamp}"
+            n = 1
+            while backup.exists():
+                backup = BACKUP_DIR / f"skill-{src.name}-{stamp}-{n}"
+                n += 1
+            shutil.move(str(dest), str(backup))
+        shutil.copytree(src, dest)
+        print(f"skill {src.name}: installed")
+
+
 def register_server(stamp: str, python: Path) -> None:
     entry = {"type": "stdio", "command": str(python), "args": [str(ROOT / "workers_mcp.py")], "env": {}}
     data = json.loads(CONFIG.read_text(encoding="utf-8")) if CONFIG.is_file() else {}
@@ -60,7 +91,7 @@ def register_server(stamp: str, python: Path) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Register the workers MCP server and install the subagents.")
+    ap = argparse.ArgumentParser(description="Register the workers MCP server and install the subagents and skills.")
     ap.add_argument("--python", default=str(ROOT / ".venv" / "Scripts" / "python.exe"),
                     help="python.exe of the virtual environment that has requirements.txt installed")
     python = Path(ap.parse_args().python).resolve()
@@ -72,8 +103,9 @@ def main() -> int:
         return 1
     stamp = time.strftime("%Y%m%d-%H%M%S")
     install_agents(stamp)
+    install_skills(stamp)
     register_server(stamp, python)
-    print("Done. Start Claude again to load the server and the subagents.")
+    print("Done. Start Claude again to load the server, the subagents and the skills.")
     return 0
 
 

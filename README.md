@@ -16,11 +16,15 @@ An MCP server that lets Claude Code act as the lead and hand part of the work to
 | `ask_gemini.py` | Calls agy; also usable from the command line |
 | `ask_deepseek.py` | Calls the DeepSeek API; also usable from the command line |
 | `agy_guard.py` | agy `PreToolUse` hook that makes every call read-only |
+| `reviewer_rules.md` | The only rules agy loads for these calls (it becomes `GEMINI.md` in agy's private home) |
+| `review_schema.json` | JSON schema for `structured` review results |
 | `worker_common.py` | Shared secret checks, size limit and call log |
 | `agents/` | Two Claude Code subagents: `gemini-reviewer` (second-opinion review) and `deepseek-drafter` (drafts and translations) |
+| `skills/` | Lead-only Claude Code skills: `lead-gemini-review` (plan and diff review loop with verification) |
 | `docs/manual.md` | User manual: usage, model tiers, logs, troubleshooting (Chinese: `docs/manual.zh-CN.md`) |
 | `docs/claude-md-snippet.md` | A section to add to `~/.claude/CLAUDE.md` telling Claude when to hand work to the workers |
-| `install.py` | Registers the MCP server and installs the subagents |
+| `docs/porting.md` | Role model (lead, reviewer worker, executor worker) and notes for adding other agents such as Codex |
+| `install.py` | Registers the MCP server and installs the subagents and skills |
 | `LICENSE` | MIT license |
 
 ## Security design
@@ -29,6 +33,7 @@ An MCP server that lets Claude Code act as the lead and hand part of the work to
   - only `read_file` is allowed, and only for files inside the workspace that pass the secret checks below;
   - running commands, writing files, web access and everything else are denied, and so is anything the hook fails on;
   - the hook applies only to calls made by this server; your own use of agy is unaffected.
+- **Reviews are isolated from your own agy setup.** agy runs with its own home (`~/.agent-workers/agy-home`, passed with agy's `--gemini_dir`), so your agy plugins, skills and `GEMINI.md` never reach a review; `reviewer_rules.md` does. Your Google sign-in still applies (agy keeps it in the OS keyring). The skills in `~/.claude/skills` are copied into each call's workspace for Gemini to choose from, except lead-only `lead-*` ones. If agy ever ignores its own home, the result says `NOT-ISOLATED`.
 - **Secrets stay local.** Files are refused by name (`secrets.toml`, `.env*`, certificates and private keys, cloud credentials…), by folder (`.ssh`, `.aws`…) and by content (`sk-…`, `AIza…`, GitHub/AWS/Slack/Stripe/Hugging Face/npm tokens, JWTs, private-key blocks, connection strings with passwords, hard-coded secret assignments). Errors report only the kind and line number, never the value.
 - **No accidental paid API use.** Every variable holding a key or token is removed from agy's environment. Each call also passes `--settings` to turn off the paid fallback (`useG1Credits`) and direct Gemini API access (`modelProvider`), without touching your own agy settings.
 - **Quota protection.** Quota is checked before each call (cached for 60 s). A call is refused when any bucket of the model's pool is below 10%; `neon-high` and `neon-xhigh` are refused when the Gemini five-hour bucket is below 25%.
@@ -65,7 +70,7 @@ python install.py
 
 > If the folder holding the repository carries a low-integrity label (some tools' sandboxes put one on a whole working folder; `icacls` shows `Low Mandatory Level`), programs started from the repository's `.venv` cannot read `%LOCALAPPDATA%` and so cannot find agy. Create the venv elsewhere, for example `python -m venv $HOME\.venvs\agent-workers-mcp`, and register it with `python install.py --python $HOME\.venvs\agent-workers-mcp\Scripts\python.exe`.
 
-The installer backs up and edits `~/.claude.json` (adding `mcpServers.workers`) and copies the two subagents into `~/.claude/agents/`. After you reopen Claude, new sessions have the three `mcp__workers__*` tools. Finally, add what you need from `docs/claude-md-snippet.md` to your `~/.claude/CLAUDE.md`.
+The installer backs up and edits `~/.claude.json` (adding `mcpServers.workers`), copies the two subagents into `~/.claude/agents/` and the skills in `skills/` into `~/.claude/skills/`. After you reopen Claude, new sessions have the three `mcp__workers__*` tools. Finally, add what you need from `docs/claude-md-snippet.md` to your `~/.claude/CLAUDE.md`.
 
 Check both workers from the command line first (if your venv is outside the repository, replace `.\.venv\Scripts\python` with that venv's python):
 
@@ -82,6 +87,7 @@ Just ask Claude, for example:
 
 - "Have Gemini review `D:\path\to\repo` in repo mode, focusing on error handling"
 - "Have gemini-reviewer review `bar()` in `src/foo.py`"
+- "Get a Gemini review of this plan" (Claude follows the `lead-gemini-review` skill: it suggests skills, asks for structured findings and verifies each one)
 - "Use ask_deepseek to translate this into English"
 - "Check the Gemini quota"
 
@@ -92,7 +98,8 @@ For choosing models, reading the logs and handling common errors, see [docs/manu
 - Tested on Windows only.
 - Gemini and DeepSeek model names change. The default models are `DEFAULT_MODEL` at the top of `ask_gemini.py` and `ask_deepseek.py`; the tier table is in the tool descriptions in `workers_mcp.py`.
 - In repo mode agy cannot run commands, so it cannot search the code; it picks files to read from `FILES.txt` (the output of `git ls-files`).
-- Every Gemini call carries about 25k tokens of fixed agent overhead, so batch small questions into one call.
+- Every Gemini call carries about 11k tokens of fixed agent overhead, so batch small questions into one call.
+- Isolation relies on agy's `--gemini_dir`, which is not documented (tested with agy 1.5.14; agy ignores the `GEMINI_HOME` variable in print mode). Results flag `NOT-ISOLATED` if a later agy stops honouring it.
 
 ## License
 
