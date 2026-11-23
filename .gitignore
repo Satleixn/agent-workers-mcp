@@ -7,6 +7,6 @@ __pycache__/
 logs/
 
 # Private design log and audit notes. The public docs (manual.md, manual.zh-CN.md,
-# claude-md-snippet.md) are tracked and stay so (ignore rules skip tracked files);
+# claude-md-snippet.md, porting.md) are tracked and stay so (ignore rules skip tracked files);
 # add a new public file here with `git add -f`
 docs/

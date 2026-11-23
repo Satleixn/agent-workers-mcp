@@ -8,6 +8,11 @@ other tool. Two ways to give it material:
   repo   a repository is mounted read-only with --add-dir and agy picks what to read from FILES.txt, a list of the
          repository's files; nothing is written into the repository.
 
+Isolation: agy runs with its own home (AGY_HOME, passed with --gemini_dir), so the user's agy plugins, skills and
+GEMINI.md never reach a review; that home's GEMINI.md is reviewer_rules.md. The shared skills (SKILLS_DIR, minus
+lead-only "lead-*" ones) are copied into the workspace's .agents/skills for Gemini to choose from; `skills` names the
+ones the caller suggests. `structured` asks for the result as JSON matching review_schema.json.
+
 Model choice (see docs/manual.md):
   gemini-4-hydrogen-low     fast: classify, extract, short summaries
   gemini-4-hydrogen-medium  everyday: summarise 10+ files, doc Q&A, explain code
@@ -15,10 +20,11 @@ Model choice (see docs/manual.md):
   gemini-4-neon-high        multi-file review, architecture review, hard bug hypotheses
   gemini-4-neon-xhigh       maths/statistics correctness, hardest reasoning (tell the user first)
   gemini-4-argon-high       stand-in for neon-high/xhigh when the Gemini pool runs low (separate quota)
-Each call costs ~25k input tokens of agent overhead, so batch small questions into one call.
+Each call costs ~11k input tokens of agent overhead (~24k before agy got its own home), so batch small questions.
 
 Usage:
   python ask_gemini.py --prompt "task" [--file a.py --file b.md] [--repo D:\\path\\to\\repo] [--model ...]
+                       [--skill name ...] [--structured]
                        [--timeout 3600]   (long runs: start it in the background; the default suits the foreground)
   python ask_gemini.py --quota
 """
@@ -37,7 +43,7 @@ import threading
 import time
 from pathlib import Path
 
-from worker_common import WorkerError, check_files, check_text, file_records, is_denied_path, log_call
+from worker_common import AGY_HOME, WorkerError, check_files, check_text, file_records, is_denied_path, log_call
 
 DEFAULT_MODEL = "gemini-4-neon-medium"
 # Time limit for one call. Repository reviews on neon-high/xhigh have taken up to ~15 minutes, and agy can lose
@@ -61,6 +67,24 @@ REPO_NOTE = (
     "files are refused.\n"
 )
 GUARD_SCRIPT = Path(__file__).resolve().with_name("agy_guard.py")
+# Becomes AGY_HOME/GEMINI.md, the only rules agy loads for our runs. agy's CLI ignores GEMINI_HOME; --gemini_dir
+# (undocumented, agy 1.5.14) moves its whole home, and the login stays in the OS keyring (tested 2026-11-23).
+REVIEWER_RULES = Path(__file__).resolve().with_name("reviewer_rules.md")
+REVIEW_SCHEMA = Path(__file__).resolve().with_name("review_schema.json")
+# Single source of the skills shared by the lead (Claude) and Gemini. Lead-only skills (orchestration that calls
+# tools only the lead has) start with LEAD_ONLY_PREFIX and are never copied.
+SKILLS_DIR = Path.home() / ".claude" / "skills"
+LEAD_ONLY_PREFIX = "lead-"
+SKILLS_MAX_BYTES = 5_000_000  # all shared skills together, copied into every call's workspace
+SKILLS_NOTE = (
+    "Shared skills are in your workspace under .agents/skills/ (one folder per skill, each with a SKILL.md). "
+    "{suggested}Decide for yourself which skills apply: read a skill's SKILL.md before following it; you may use "
+    "skills nobody suggested and reject suggestions. {report}\n"
+)
+SKILLS_REPORT_TEXT = ("End your answer with a short 'Skills' section: skills you read, suggestions you rejected "
+                      "and why, skills you would add.")
+SKILLS_REPORT_JSON = "Report them in skills_used, rejected_suggestions and suggested_skills."
+STRUCTURED_NOTE = "Answer only with JSON that matches the required schema; give each finding its location and evidence.\n"
 MAX_INDEX_FILES = 5000
 # Directories never listed in FILES.txt (dependencies and build output, not the code under review).
 INDEX_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", "dist",
@@ -78,6 +102,8 @@ AGY_SETTINGS = json.dumps({"useG1Credits": False, "modelProvider": ""})
 START_FAILURE = "failed to start conversation"
 # agy keeps shared per-user state (conversation index, summaries database), so this process runs one at a time.
 _agy_lock = threading.Lock()
+# Quota queries skip _agy_lock, so updating agy's home has a lock of its own.
+_home_lock = threading.Lock()
 # Quota floors, checked before every call against the model's own pool (a quota query spends no quota).
 QUOTA_STOP_PCT = 10        # any live bucket of the pool below this: refuse, Claude does the work itself
 QUOTA_HIGH_TIER_PCT = 25   # Gemini five-hour bucket below this: refuse the costliest models
@@ -149,7 +175,8 @@ def _run_agy_once(args: list[str], cwd: str, cancel: Cancel | None = None, wait_
                   lock: bool = True) -> dict:
     """One agy run in print mode with JSON output; returns the parsed result object. `lock=False` skips the
     one-at-a-time lock, for runs that start no conversation (the quota query)."""
-    cmd = [_agy(), *args, "--settings", AGY_SETTINGS, "--output-format", "json"]
+    _prepare_home()
+    cmd = [_agy(), f"--gemini_dir={AGY_HOME}", *args, "--settings", AGY_SETTINGS, "--output-format", "json"]
     if len(subprocess.list2cmdline(cmd)) > MAX_CMDLINE_CHARS:
         raise WorkerError(f"prompt too long for the Windows command line (limit about {MAX_CMDLINE_CHARS} "
                           "characters); put the material in files instead")
@@ -198,11 +225,35 @@ def _run_agy_once(args: list[str], cwd: str, cancel: Cancel | None = None, wait_
     return result
 
 
+def _prepare_home() -> None:
+    """Create our agy home and keep its GEMINI.md equal to reviewer_rules.md. It holds no plugins or skills. The file
+    is replaced in one step, so an agy starting meanwhile never reads half of it."""
+    try:
+        rules = REVIEWER_RULES.read_text(encoding="utf-8")
+        with _home_lock:
+            AGY_HOME.mkdir(parents=True, exist_ok=True)
+            target = AGY_HOME / "GEMINI.md"
+            if target.is_file() and target.read_text(encoding="utf-8") == rules:
+                return
+            tmp = AGY_HOME / f"GEMINI.md.{os.getpid()}.tmp"
+            tmp.write_text(rules, encoding="utf-8")
+            os.replace(tmp, target)
+    except OSError as e:
+        raise WorkerError(f"could not prepare agy's home {AGY_HOME}: {e.strerror or e}")
+
+
+def _isolated(conversation_id: str | None) -> bool:
+    """True when agy kept the conversation in our home, i.e. --gemini_dir still works. If a future agy ignored the
+    flag, the run would load the user's own plugins and GEMINI.md, so the result says so instead of failing silently."""
+    return bool(conversation_id) and (AGY_HOME / "antigravity-cli" / "conversations" / f"{conversation_id}.db").is_file()
+
+
 def _transcript(conversation_id: str | None) -> str | None:
     """agy's own full record of a call: prompt as received, thinking, tool calls and reply."""
     if not conversation_id:
         return None
-    return str(Path.home() / ".gemini" / "antigravity-cli" / "brain" / conversation_id
+    home = AGY_HOME if _isolated(conversation_id) else Path.home() / ".gemini"
+    return str(home / "antigravity-cli" / "brain" / conversation_id
                / ".system_generated" / "logs" / "transcript_full.jsonl")
 
 
@@ -234,17 +285,82 @@ def _restore_paths(text: str, work: str, copies: dict[str, Path]) -> str:
     return text
 
 
-def _install_guard(work: Path, roots: list[Path]) -> Path:
-    """Put the read-only guard hook into the temp workspace (workspace-local hooks apply only to this run)."""
+def _install_guard(work: Path, roots: list[Path], structured: bool) -> Path:
+    """Put the read-only guard hook into the temp workspace (workspace-local hooks apply only to this run). Its own
+    files sit in .agents/guard and .agents/hooks.json, which agy may not read; .agents/skills stays readable.
+    `finish` (how agy hands back a --json-schema result) is allowed only for structured calls."""
     agents = work / ".agents"
-    agents.mkdir()
-    cfg = agents / "guard.json"
-    cfg.write_text(json.dumps({"roots": [str(r) for r in roots], "guard_dir": str(agents)}), encoding="utf-8")
+    guard_dir = agents / "guard"
+    guard_dir.mkdir(parents=True)
+    cfg = guard_dir / "guard.json"
+    cfg.write_text(json.dumps({"roots": [str(r) for r in roots],
+                               "deny": [str(guard_dir), str(agents / "hooks.json")],
+                               "results": ["finish"] if structured else []}), encoding="utf-8")
     command = subprocess.list2cmdline([sys.executable, str(GUARD_SCRIPT), str(cfg)])
     hooks = {"workers-read-only-guard": {"PreToolUse": [
         {"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 30}]}]}}
     (agents / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
-    return agents / "guard_log.jsonl"
+    return guard_dir / "guard_log.jsonl"
+
+
+def _is_link(p: Path) -> bool:
+    return p.is_symlink() or getattr(p, "is_junction", lambda: False)()
+
+
+def _shared_skills() -> list[str]:
+    """Names of the skills in SKILLS_DIR that Gemini may use: every folder with a SKILL.md, minus lead-only ones
+    (matched case-insensitively, on the folder's own name and on the folder a link points to)."""
+    if not SKILLS_DIR.is_dir():
+        return []
+    return sorted(p.name for p in SKILLS_DIR.iterdir()
+                  if (p / "SKILL.md").is_file()
+                  and not any(n.lower().startswith(LEAD_ONLY_PREFIX) for n in (p.name, p.resolve().name)))
+
+
+def _install_skills(work: Path, names: list[str]) -> list[str]:
+    """Copy the shared skills into the workspace's .agents/skills, where agy discovers them; return the names copied.
+    agy reads each SKILL.md's frontmatter itself, not through the guard, so a skill whose SKILL.md fails the secret
+    check is skipped. Links inside a skill, secret files and dependency folders are not copied (a copied link would
+    lose the name and folder the denylist checks), and the guard still checks every file Gemini reads."""
+    total = 0
+    installed = []
+    for name in names:
+        src = SKILLS_DIR / name
+        try:
+            check_text((src / "SKILL.md").read_text(encoding="utf-8", errors="replace"), f"skill {name}/SKILL.md")
+        except (WorkerError, OSError) as e:
+            print(f"skipping skill {name}: {getattr(e, 'strerror', None) or e}", file=sys.stderr)
+            continue
+        try:
+            for dirpath, dirnames, filenames in os.walk(src):
+                here = Path(dirpath)
+                dirnames[:] = [d for d in dirnames if d not in INDEX_SKIP_DIRS and not _is_link(here / d)]
+                for f in filenames:
+                    p = here / f
+                    if _is_link(p) or is_denied_path(p.resolve()):
+                        continue
+                    total += p.stat().st_size
+                    if total > SKILLS_MAX_BYTES:
+                        raise WorkerError(f"the shared skills in {SKILLS_DIR} exceed {SKILLS_MAX_BYTES} bytes; move "
+                                          "large files out of them")
+                    target = work / ".agents" / "skills" / name / p.relative_to(src)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(p, target)
+        except OSError as e:
+            raise WorkerError(f"could not copy skill {name}: {e.strerror or e}")
+        installed.append(name)
+    return installed
+
+
+def _restore_json_paths(value, work: str, copies: dict[str, Path]):
+    """_restore_paths on every string inside parsed JSON, where Windows paths are escaped in the raw text."""
+    if isinstance(value, str):
+        return _restore_paths(value, work, copies)
+    if isinstance(value, list):
+        return [_restore_json_paths(v, work, copies) for v in value]
+    if isinstance(value, dict):
+        return {k: _restore_json_paths(v, work, copies) for k, v in value.items()}
+    return value
 
 
 def _guard_log(path: Path) -> list[dict]:
@@ -279,16 +395,24 @@ def _repo_index(repo: Path) -> list[str]:
 
 
 def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel | None = None,
-               timeout_s: int = PRINT_TIMEOUT_S, repo: str | None = None) -> dict:
-    """Run one prompt; return {"text", "model", "elapsed_s", "usage", "call_id"}. Raises WorkerError on any failure.
+               timeout_s: int = PRINT_TIMEOUT_S, repo: str | None = None, skills=(), structured: bool = False) -> dict:
+    """Run one prompt; return {"text", "model", "elapsed_s", "usage", "call_id", "denied", "isolated"}, plus "data"
+    (the parsed JSON, or None if it did not parse) when `structured`. Raises WorkerError on any failure.
     `cancel` lets another thread stop the call (the MCP server uses it when the client cancels). `timeout_s` is
     agy's own limit (the command line passes --timeout, CLI_TIMEOUT_S by default). `repo` mounts a
-    repository read-only for agy to explore (see the module docstring)."""
+    repository read-only for agy to explore; `skills` names the shared skills the caller suggests (see the module
+    docstring)."""
     model = model or DEFAULT_MODEL
     if model.startswith("-") or "orchestrator" in model:
         raise WorkerError(f"model {model!r} is not allowed; pick one from the tier table")
     check_text(prompt, "prompt")
     checked = check_files(files)
+    shared = _shared_skills()
+    suggested = list(dict.fromkeys(skills))
+    unknown = [s for s in suggested if s not in shared]
+    if unknown:
+        raise WorkerError(f"unknown or lead-only skill(s): {', '.join(unknown)}; "
+                          f"shared skills: {', '.join(shared) or 'none'}")
     repo_path = None
     if repo:
         repo_path = Path(repo).expanduser().resolve()
@@ -299,23 +423,40 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
     quota_note = _check_quota(model)
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="agy_", ignore_cleanup_errors=True) as work:
+        # Copies go under files/, so a reviewed file such as .agents/hooks.json or .agents/skills/x/SKILL.md can
+        # neither overwrite the guard nor be loaded by agy as part of this workspace's configuration.
+        inputs = Path(work) / "files"
         copies: dict[str, Path] = {}
         for name, (p, data) in _copy_names(checked).items():
-            dest = Path(work) / name
+            dest = inputs / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
             copies[name] = p
-        guard_log = _install_guard(Path(work), [Path(work)] + ([repo_path] if repo_path else []))
+        guard_log = _install_guard(Path(work), [Path(work)] + ([repo_path] if repo_path else []), structured)
         full = prompt
         if copies:
-            full = READ_ONLY_NOTE + "Files: " + ", ".join(copies) + "\n\n" + full
+            full = READ_ONLY_NOTE + "Files: " + ", ".join(f"files/{n}" for n in copies) + "\n\n" + full
         extra = []
         if repo_path:
             (Path(work) / "FILES.txt").write_text("\n".join(_repo_index(repo_path)) + "\n", encoding="utf-8")
             full = REPO_NOTE.format(repo=repo_path) + "\n" + full
             extra = ["--add-dir", str(repo_path)]
+        installed = _install_skills(Path(work), shared) if shared else []
+        skipped = [s for s in suggested if s not in installed]
+        if skipped:
+            raise WorkerError(f"suggested skill(s) failed the secret check and were not copied: {', '.join(skipped)}")
+        if installed:
+            # Give paths: a suggested skill may be manual-only (disable-model-invocation), which agy leaves out of
+            # the skill list it shows the model; a suggestion stands in for the user invoking it.
+            hint = ("The lead suggests: " + ", ".join(
+                f"{s} ({Path(work) / '.agents' / 'skills' / s / 'SKILL.md'})" for s in suggested) + ". ") if suggested else ""
+            full = SKILLS_NOTE.format(suggested=hint, report=SKILLS_REPORT_JSON if structured else SKILLS_REPORT_TEXT) + full
+        if structured:
+            full = STRUCTURED_NOTE + full
+            extra += ["--json-schema", str(REVIEW_SCHEMA)]
         record = {"worker": "gemini", "model": model, "prompt": full, "files": file_records(checked),
-                  "repo": str(repo_path) if repo_path else None, "quota_check": quota_note}
+                  "repo": str(repo_path) if repo_path else None, "quota_check": quota_note,
+                  "skills_suggested": suggested, "structured": structured}
         try:
             result = _run_agy(
                 [f"--print={full}", "--model", model, "--mode", "plan", "--disable-slash-commands", *extra,
@@ -332,19 +473,34 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
         except WorkerError as e:
             cid = getattr(e, "conversation_id", None)
             log_call({**record, "elapsed_s": round(time.monotonic() - start, 1), "error": str(e),
-                      "tool_calls": _guard_log(guard_log), "conversation_id": cid, "agy_transcript": _transcript(cid)})
+                      "tool_calls": _guard_log(guard_log), "conversation_id": cid, "agy_transcript": _transcript(cid),
+                      "isolated": _isolated(cid)})
             raise
         tool_calls = _guard_log(guard_log)
     cid = result.get("conversation_id")
+    text = result.get("response", "")
+    data = None
+    if structured:
+        try:
+            data = _restore_json_paths(json.loads(text), str(inputs), copies)
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+        except json.JSONDecodeError:
+            data = None
+    if data is None:
+        text = _restore_paths(text, str(inputs), copies)
     out = {
-        "text": _restore_paths(result.get("response", ""), work, copies),
+        "text": text,
         "model": model,
         "elapsed_s": round(time.monotonic() - start, 1),
         "usage": result.get("usage", {}),
         "call_id": cid,
+        "isolated": _isolated(cid),
     }
+    if structured:
+        out["data"] = data
     log_call({**record, "elapsed_s": out["elapsed_s"], "usage": out["usage"], "response": out["text"],
-              "tool_calls": tool_calls, "conversation_id": cid, "agy_transcript": _transcript(cid)})
+              "tool_calls": tool_calls, "conversation_id": cid, "agy_transcript": _transcript(cid),
+              "isolated": out["isolated"], **({"json_valid": data is not None} if structured else {})})
     out["denied"] = [c for c in tool_calls if c.get("decision") != "allow"]
     return out
 
@@ -411,6 +567,8 @@ def main() -> int:
     ap.add_argument("--file", action="append", default=[])
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--repo", help="mount this repository read-only and let agy pick the files to read")
+    ap.add_argument("--skill", action="append", default=[], help="suggest a shared skill to Gemini (repeatable)")
+    ap.add_argument("--structured", action="store_true", help="ask for the result as JSON (review_schema.json)")
     ap.add_argument("--timeout", type=int, default=CLI_TIMEOUT_S,
                     help=f"seconds before agy is stopped (default {CLI_TIMEOUT_S}, under a shell tool's 10-minute "
                          f"foreground cap; up to {PRINT_TIMEOUT_S} when run in the background)")
@@ -423,11 +581,17 @@ def main() -> int:
             return 0
         if not a.prompt:
             ap.error("--prompt is required unless --quota is given")
-        out = ask_gemini(a.prompt, a.file, a.model, timeout_s=a.timeout, repo=a.repo)
+        out = ask_gemini(a.prompt, a.file, a.model, timeout_s=a.timeout, repo=a.repo, skills=a.skill,
+                         structured=a.structured)
     except WorkerError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(out["text"])
+    if not out["isolated"]:
+        print("warning: agy did not use its own home (--gemini_dir); the user's plugins and GEMINI.md may have "
+              "applied", file=sys.stderr)
+    if a.structured and out["data"] is None:
+        print("warning: the structured answer is not valid JSON; the raw text is above", file=sys.stderr)
     for d in out["denied"]:
         print(f"guard denied {d.get('tool')} {d.get('path') or ''}: {d.get('reason')}", file=sys.stderr)
     u = out["usage"]

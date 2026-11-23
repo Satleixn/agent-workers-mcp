@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string", "description": "Overall verdict in two or three sentences."},
+    "findings": {
+      "type": "array",
+      "description": "Most severe first.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {"type": "string", "enum": ["blocking", "major", "minor", "nit"]},
+          "location": {"type": "string", "description": "file:line, or the section or passage concerned."},
+          "claim": {"type": "string", "description": "The problem, in one or two sentences."},
+          "evidence": {"type": "string", "description": "What in the material shows it; a triggering input where possible."},
+          "suggestion": {"type": "string"},
+          "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+        },
+        "required": ["severity", "location", "claim", "evidence", "confidence"]
+      }
+    },
+    "skills_used": {"type": "array", "items": {"type": "string"}, "description": "Skills whose SKILL.md you read and followed."},
+    "rejected_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"skill": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["skill", "reason"]
+      }
+    },
+    "suggested_skills": {
+      "type": "array",
+      "description": "Skills (shared or not yet existing) you would add for this kind of task.",
+      "items": {
+        "type": "object",
+        "properties": {"skill": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["skill", "reason"]
+      }
+    }
+  },
+  "required": ["summary", "findings", "skills_used", "rejected_suggestions", "suggested_skills"]
+}

@@ -29,14 +29,23 @@ def _with_meta(out: dict, extra: str = "") -> str:
 
 
 @server.tool()
-async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = None, repo: str | None = None) -> str:
+async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = None, repo: str | None = None,
+                     skills: list[str] = [], structured: bool = False) -> str:
     """Ask Gemini (Google AI Pro subscription quota, via the Antigravity CLI) for a read-only review. A guard hook
     lets agy only read files (no commands, no writes, no web) and refuses secret files. Two ways to give material:
       files  absolute paths; copies go into an empty temp dir (total up to 700KB).
       repo   absolute path of a repository; it is mounted read-only and agy picks what to read from a file list,
              so you only write the brief (what to review, what to look for). No size cap; nothing is written into
              the repository. Ask the user before sending a private repository unless their instructions allow it.
-    The header line ends with `denied=N` when the guard refused some of agy's attempts.
+    agy runs in its own home: the user's agy plugins and GEMINI.md never apply; reviewer rules do. Every shared skill
+    (~/.claude/skills minus lead-* ones) is available to Gemini, which picks what to read.
+      skills      names of shared skills you suggest for this task (manual-only ones included); Gemini may reject
+                  them or use others, and reports which it read, rejected and would add.
+      structured  true: the answer is JSON with summary, findings (severity, location, claim, evidence, confidence),
+                  skills_used, rejected_suggestions, suggested_skills. Use it for reviews you will verify item by item.
+    The `[model ...]` tag at the start of the header line adds `denied=N` when the guard refused some of agy's
+    attempts, NOT-ISOLATED if agy ignored its own home (the user's plugins and GEMINI.md may then have applied; say
+    so when reporting), and JSON-INVALID when a structured answer did not parse (the raw text follows).
 
     Pick `model` by task (default gemini-4-neon-medium):
       gemini-4-hydrogen-low     classify, extract, short summaries, format conversion
@@ -48,7 +57,7 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     Quota is checked automatically before each call: any bucket of the model's pool under 10% -> the call is
     refused, do the work yourself and tell the user; Gemini five-hour bucket under 25% -> neon-high/xhigh are
     refused, retry with gemini-4-argon-high (separate quota) or gemini-4-neon-medium as the error suggests.
-    Each call carries ~25k tokens of agent overhead, so batch small questions into one call.
+    Each call carries ~11k tokens of agent overhead, so batch small questions into one call.
     A call can take up to an hour (Esc stops it at once): neon-high on 100KB+ of input often thinks for 3+
     minutes, and repository reviews on neon-high/xhigh have taken up to ~15. Files may total
     700KB, but for neon-high, neon-xhigh or argon keep each call under ~150KB and split larger reviews by module.
@@ -61,7 +70,7 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     cancel = Cancel()
     try:
         out = await anyio.to_thread.run_sync(
-            lambda: _ask_gemini(prompt, files, model, cancel=cancel, repo=repo),
+            lambda: _ask_gemini(prompt, files, model, cancel=cancel, repo=repo, skills=skills, structured=structured),
             abandon_on_cancel=True)
     except anyio.get_cancelled_exc_class():
         cancel.cancel()
@@ -69,7 +78,9 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     except WorkerError as e:
         raise ToolError(str(e))
     denied = out.get("denied") or []
-    return _with_meta(out, f" denied={len(denied)}" if denied else "")
+    extra = ((f" denied={len(denied)}" if denied else "") + ("" if out.get("isolated") else " NOT-ISOLATED")
+             + (" JSON-INVALID" if structured and out.get("data") is None else ""))
+    return _with_meta(out, extra)
 
 
 @server.tool()
