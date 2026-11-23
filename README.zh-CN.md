@@ -18,9 +18,10 @@
 | `agy_guard.py` | agy 的 `PreToolUse` 钩子：每次调用都强制只读 |
 | `reviewer_rules.md` | 这些调用里 agy 唯一加载的规则（成为 agy 私有 home 里的 `GEMINI.md`） |
 | `review_schema.json` | `structured` 审查结果的 JSON schema |
+| `proposal_schema.json` | `proposal` 结果（Gemini 自己的独立方案）的 JSON schema |
 | `worker_common.py` | 共用的密钥检查、大小上限、调用日志 |
 | `agents/` | 两个 Claude Code 子代理：`gemini-reviewer`（第二意见审查）、`deepseek-drafter`（起草和翻译） |
-| `skills/` | 只给主脑用的 Claude Code skill：`lead-gemini-review`（计划审和 diff 审的循环，含逐条核实） |
+| `skills/` | 只给主脑用的 Claude Code skill：`lead-gemini-review`（计划审和 diff 审的循环、独立方案，含逐条核实） |
 | `docs/manual.zh-CN.md` | 操作说明书：用法、模型分档、日志、常见问题（英文版 `docs/manual.md`） |
 | `docs/claude-md-snippet.md` | 建议加进 `~/.claude/CLAUDE.md` 的一节，告诉 Claude 什么时候交给工人 |
 | `docs/porting.md` | 角色模型（主脑、审查型工人、执行型工人）和接入其他 agent（如 Codex）的要点（英文） |
@@ -88,6 +89,7 @@ python install.py
 - "让 Gemini 以读仓库模式审查 `D:\path\to\repo`，重点看错误处理"
 - "让 gemini-reviewer 审查 `src/foo.py` 里的 `bar()`"
 - "让 Gemini 审一下这个计划"（Claude 按 `lead-gemini-review` skill 执行：建议 skill、要求结构化结论、逐条核实）
+- "让 Gemini 独立出一份方案，再和你的对比"（独立方案：Gemini 只拿到需求和代码，看不到 Claude 的方案；Claude 按决策点逐条合成，标明采纳了谁的、为什么）
 - "用 ask_deepseek 把这段翻成英文"
 - "查一下 Gemini 额度"
 

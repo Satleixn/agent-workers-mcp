@@ -30,7 +30,8 @@ After getting a result, Claude should verify it by running code or reading the s
 - **Shared skills**: `~/.claude/skills` is the one place for skills Claude and Gemini share. Every call copies those folders (except lead-only `lead-*` ones) into the temporary directory's `.agents/skills/`, so Gemini sees them all and reads the ones it judges relevant. Your own agy plugins and skills are not used (see section 4).
 - **`skills`**: the shared skills Claude suggests for this task, passed with their paths, so manual-only skills (`disable-model-invocation`) work too. Gemini may reject a suggestion or use other skills, and reports which it read, rejected and would add.
 - **`structured`**: the answer is JSON matching `review_schema.json`: `summary`, `findings` (each with `severity`, `location`, `claim`, `evidence`, `confidence`, optional `suggestion`), `skills_used`, `rejected_suggestions`, `suggested_skills`. Claude uses it for reviews it verifies item by item.
-- **Review loop**: the `lead-gemini-review` skill (installed into `~/.claude/skills` by `install.py`) tells Claude when to ask for a plan or diff review, how to brief it, how to verify the findings and how to run a re-review.
+- **`proposal`**: instead of reviewing, Gemini drafts its own independent plan, as JSON matching `proposal_schema.json`: `summary`, `assumptions`, `decisions` (each with `topic`, `choice`, `rationale`, `evidence`, `alternatives`, `confidence`), `steps`, `risks`, `open_questions` and the three skills fields. It implies `structured`. Claude briefs it with the requirement and the code only, never its own plan, writes its own plan first, then compares the two decision by decision.
+- **Review loop**: the `lead-gemini-review` skill (installed into `~/.claude/skills` by `install.py`) tells Claude when to ask for a plan or diff review or an independent proposal, how to brief it, how to verify the findings and how to run a re-review.
 
 ### Model tiers (Claude chooses from this table by default)
 
@@ -60,16 +61,19 @@ After getting a result, Claude should verify it by running code or reading the s
 <repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Review the animations" --file 'D:\path\modal.css' --skill review-animations --structured
 ```
 ```powershell
+<repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Requirement: ... Constraints: ... Draft your plan" --repo 'D:\path\some-repo' --model gemini-4-neon-high --proposal
+```
+```powershell
 <repo>\.venv\Scripts\python <repo>\ask_gemini.py --quota
 ```
 
-The answer goes to stdout; usage, the call id and any actions the guard hook refused go to stderr. `--file` and `--skill` can be given several times; `--structured` asks for the JSON result. `--timeout` sets the time limit in seconds: the default of 540 keeps a foreground run under the 10-minute limit of Claude's shell tool; for long reviews start the script in the background with `--timeout 3600`. DeepSeek also takes `--system "..."` and `--json` (asks for a JSON reply).
+The answer goes to stdout; usage, the call id and any actions the guard hook refused go to stderr. `--file` and `--skill` can be given several times; `--structured` asks for the JSON review result, `--proposal` for Gemini's own plan as JSON. `--timeout` sets the time limit in seconds: the default of 540 keeps a foreground run under the 10-minute limit of Claude's shell tool; for long reviews start the script in the background with `--timeout 3600`. DeepSeek also takes `--system "..."` and `--json` (asks for a JSON reply).
 
 ## 3. Inspecting the raw inputs and outputs
 
 Every call that is **actually sent** (successful or not) adds one line to `<repo>\logs\YYYY-MM.jsonl`: the prompt as sent, file fingerprints (path, size, sha256), the full answer or error, usage and elapsed time.
 
-- Gemini calls also record `agy_transcript` (agy's own full record, including its thinking and every step), `tool_calls` (the guard's decision on each action agy tried, including which `SKILL.md` files Gemini read), `repo` in repo mode, `quota_check`, `skills_suggested`, `structured` and `isolated`.
+- Gemini calls also record `agy_transcript` (agy's own full record, including its thinking and every step), `tool_calls` (the guard's decision on each action agy tried, including which `SKILL.md` files Gemini read), `repo` in repo mode, `quota_check`, `skills_suggested`, `structured`, `proposal` and `isolated`.
 - DeepSeek calls also record the thinking text `reasoning` and whether the call fell in peak hours (`peak`).
 
 The first line of an MCP result ends with `id=…`. To look a call up by id:
@@ -86,7 +90,7 @@ $id = 'paste the id here'; Get-ChildItem -LiteralPath '<repo>\logs' -Filter '*.j
 
 - **Refused by name and location**: `secrets.toml`, every kind of `.env`, certificates and private keys (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `id_rsa*` and so on), `credentials.json`, `service_account*.json`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.claude.json`; files under `.streamlit`, `.ssh`, `.aws`, `.kube`, `.gnupg`, `.azure` and `.gcloud` folders; anything in `~/.gemini`, `~/.agent-workers/agy-home` or this repository's `logs/`.
 - **Refused by content**: anything that looks like a key in file contents, the prompt or the system prompt. This covers the key and token formats of the major providers, JWTs, long `Bearer` strings, private-key blocks, connection strings with passwords, `xxx_api_key = "long string"`, and the unquoted forms in `.env` and YAML files. Assignments to names ending in `_path`, `_file`, `_dir`, `_url` or `_name` do not count (they hold locations). Errors give only the kind and the line number.
-- **Gemini is read-only**: each call installs the guard hook `agy_guard.py` in its temporary directory. It allows only `read_file` on files inside the workspace that pass the checks above (the guard's own files under `.agents/guard` and `.agents/hooks.json` excepted), plus, on `structured` calls only, `finish`, which agy uses to hand back the result; running commands, writing files, web access and everything else are denied, and so is anything the hook fails on. `--mode plan` plus an empty temporary directory is not enough on its own: in tests agy still read files outside the workspace, hence the hook.
+- **Gemini is read-only**: each call installs the guard hook `agy_guard.py` in its temporary directory. It allows only `read_file` on files inside the workspace that pass the checks above (the guard's own files under `.agents/guard` and `.agents/hooks.json` excepted), plus, on `structured` and `proposal` calls only, `finish`, which agy uses to hand back the result; running commands, writing files, web access and everything else are denied, and so is anything the hook fails on. `--mode plan` plus an empty temporary directory is not enough on its own: in tests agy still read files outside the workspace, hence the hook.
 - **Isolated from your own agy**: agy runs with `--gemini_dir ~/.agent-workers/agy-home`, a home with no plugins whose `GEMINI.md` is `reviewer_rules.md`. Your agy plugins, skills and `GEMINI.md` therefore never apply to these calls, and they no longer share agy's conversation database with your own sessions. Sign-in is unaffected (agy keeps it in the OS keyring). `--gemini_dir` is undocumented (tested with agy 1.5.14; the `GEMINI_HOME` variable has no effect in print mode), so every call checks that agy really used that home and flags `NOT-ISOLATED` if not.
 - **No accidental paid API use**: every variable whose name contains key, token, secret, password or credential is removed from agy's environment. Each call also uses `--settings` to force `useG1Credits: false` (no paid AI credits once the subscription quota runs out) and `modelProvider: ""` (no direct Gemini API). These settings apply only to this tool's calls and are never written to your agy settings. Slash commands are disabled too.
 - **Which repositories may be sent** is decided by your CLAUDE.md (see the Privacy line in the snippet). The code enforces only the no-secrets rule and does not restrict folders.

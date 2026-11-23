@@ -11,7 +11,8 @@ other tool. Two ways to give it material:
 Isolation: agy runs with its own home (AGY_HOME, passed with --gemini_dir), so the user's agy plugins, skills and
 GEMINI.md never reach a review; that home's GEMINI.md is reviewer_rules.md. The shared skills (SKILLS_DIR, minus
 lead-only "lead-*" ones) are copied into the workspace's .agents/skills for Gemini to choose from; `skills` names the
-ones the caller suggests. `structured` asks for the result as JSON matching review_schema.json.
+ones the caller suggests. `structured` asks for the result as JSON matching review_schema.json; `proposal` asks
+Gemini for its own independent plan instead, as JSON matching proposal_schema.json.
 
 Model choice (see docs/manual.md):
   gemini-4-hydrogen-low     fast: classify, extract, short summaries
@@ -24,7 +25,7 @@ Each call costs ~11k input tokens of agent overhead (~24k before agy got its own
 
 Usage:
   python ask_gemini.py --prompt "task" [--file a.py --file b.md] [--repo D:\\path\\to\\repo] [--model ...]
-                       [--skill name ...] [--structured]
+                       [--skill name ...] [--structured] [--proposal]   (--proposal implies --structured)
                        [--timeout 3600]   (long runs: start it in the background; the default suits the foreground)
   python ask_gemini.py --quota
 """
@@ -71,6 +72,7 @@ GUARD_SCRIPT = Path(__file__).resolve().with_name("agy_guard.py")
 # (undocumented, agy 1.5.14) moves its whole home, and the login stays in the OS keyring (tested 2026-11-23).
 REVIEWER_RULES = Path(__file__).resolve().with_name("reviewer_rules.md")
 REVIEW_SCHEMA = Path(__file__).resolve().with_name("review_schema.json")
+PROPOSAL_SCHEMA = Path(__file__).resolve().with_name("proposal_schema.json")
 # Single source of the skills shared by the lead (Claude) and Gemini. Lead-only skills (orchestration that calls
 # tools only the lead has) start with LEAD_ONLY_PREFIX and are never copied.
 SKILLS_DIR = Path.home() / ".claude" / "skills"
@@ -85,6 +87,11 @@ SKILLS_REPORT_TEXT = ("End your answer with a short 'Skills' section: skills you
                       "and why, skills you would add.")
 SKILLS_REPORT_JSON = "Report them in skills_used, rejected_suggestions and suggested_skills."
 STRUCTURED_NOTE = "Answer only with JSON that matches the required schema; give each finding its location and evidence.\n"
+PROPOSAL_NOTE = (
+    "This is an independent proposal: draft your own plan for the task from the brief and the material, without "
+    "guessing at any approach the lead may have in mind. Answer only with JSON that matches the required schema; for "
+    "each decision give the alternatives you weighed and the evidence it rests on.\n"
+)
 MAX_INDEX_FILES = 5000
 # Directories never listed in FILES.txt (dependencies and build output, not the code under review).
 INDEX_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", "dist",
@@ -394,14 +401,32 @@ def _repo_index(repo: Path) -> list[str]:
     return lines
 
 
+def _last_json(text: str):
+    """The last of the JSON values in `text`. agy prints every result Gemini submits through `finish`: one that
+    failed the --json-schema check is followed by the retry that passed (seen 2026-11-23), so the last one is the
+    accepted result. Raises json.JSONDecodeError when the text is not a sequence of JSON values or the last one is
+    not an object (both schemas want an object)."""
+    decoder, pos, last = json.JSONDecoder(), 0, None
+    text = text.strip()
+    while pos < len(text):
+        last, pos = decoder.raw_decode(text, pos)
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+    if not isinstance(last, dict):
+        raise json.JSONDecodeError("no JSON object", text, 0)
+    return last
+
+
 def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel | None = None,
-               timeout_s: int = PRINT_TIMEOUT_S, repo: str | None = None, skills=(), structured: bool = False) -> dict:
+               timeout_s: int = PRINT_TIMEOUT_S, repo: str | None = None, skills=(), structured: bool = False,
+               proposal: bool = False) -> dict:
     """Run one prompt; return {"text", "model", "elapsed_s", "usage", "call_id", "denied", "isolated"}, plus "data"
-    (the parsed JSON, or None if it did not parse) when `structured`. Raises WorkerError on any failure.
+    (the parsed JSON, or None if it did not parse) when `structured` or `proposal`. Raises WorkerError on any failure.
     `cancel` lets another thread stop the call (the MCP server uses it when the client cancels). `timeout_s` is
     agy's own limit (the command line passes --timeout, CLI_TIMEOUT_S by default). `repo` mounts a
-    repository read-only for agy to explore; `skills` names the shared skills the caller suggests (see the module
-    docstring)."""
+    repository read-only for agy to explore; `skills` names the shared skills the caller suggests; `proposal` asks
+    for an independent plan and implies `structured` (see the module docstring)."""
+    structured = structured or proposal
     model = model or DEFAULT_MODEL
     if model.startswith("-") or "orchestrator" in model:
         raise WorkerError(f"model {model!r} is not allowed; pick one from the tier table")
@@ -452,11 +477,11 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
                 f"{s} ({Path(work) / '.agents' / 'skills' / s / 'SKILL.md'})" for s in suggested) + ". ") if suggested else ""
             full = SKILLS_NOTE.format(suggested=hint, report=SKILLS_REPORT_JSON if structured else SKILLS_REPORT_TEXT) + full
         if structured:
-            full = STRUCTURED_NOTE + full
-            extra += ["--json-schema", str(REVIEW_SCHEMA)]
+            full = (PROPOSAL_NOTE if proposal else STRUCTURED_NOTE) + full
+            extra += ["--json-schema", str(PROPOSAL_SCHEMA if proposal else REVIEW_SCHEMA)]
         record = {"worker": "gemini", "model": model, "prompt": full, "files": file_records(checked),
                   "repo": str(repo_path) if repo_path else None, "quota_check": quota_note,
-                  "skills_suggested": suggested, "structured": structured}
+                  "skills_suggested": suggested, "structured": structured, "proposal": proposal}
         try:
             result = _run_agy(
                 [f"--print={full}", "--model", model, "--mode", "plan", "--disable-slash-commands", *extra,
@@ -482,7 +507,7 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
     data = None
     if structured:
         try:
-            data = _restore_json_paths(json.loads(text), str(inputs), copies)
+            data = _restore_json_paths(_last_json(text), str(inputs), copies)
             text = json.dumps(data, ensure_ascii=False, indent=2)
         except json.JSONDecodeError:
             data = None
@@ -569,6 +594,8 @@ def main() -> int:
     ap.add_argument("--repo", help="mount this repository read-only and let agy pick the files to read")
     ap.add_argument("--skill", action="append", default=[], help="suggest a shared skill to Gemini (repeatable)")
     ap.add_argument("--structured", action="store_true", help="ask for the result as JSON (review_schema.json)")
+    ap.add_argument("--proposal", action="store_true",
+                    help="ask for Gemini's own independent plan as JSON (proposal_schema.json)")
     ap.add_argument("--timeout", type=int, default=CLI_TIMEOUT_S,
                     help=f"seconds before agy is stopped (default {CLI_TIMEOUT_S}, under a shell tool's 10-minute "
                          f"foreground cap; up to {PRINT_TIMEOUT_S} when run in the background)")
@@ -582,7 +609,7 @@ def main() -> int:
         if not a.prompt:
             ap.error("--prompt is required unless --quota is given")
         out = ask_gemini(a.prompt, a.file, a.model, timeout_s=a.timeout, repo=a.repo, skills=a.skill,
-                         structured=a.structured)
+                         structured=a.structured, proposal=a.proposal)
     except WorkerError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -590,7 +617,7 @@ def main() -> int:
     if not out["isolated"]:
         print("warning: agy did not use its own home (--gemini_dir); the user's plugins and GEMINI.md may have "
               "applied", file=sys.stderr)
-    if a.structured and out["data"] is None:
+    if (a.structured or a.proposal) and out["data"] is None:
         print("warning: the structured answer is not valid JSON; the raw text is above", file=sys.stderr)
     for d in out["denied"]:
         print(f"guard denied {d.get('tool')} {d.get('path') or ''}: {d.get('reason')}", file=sys.stderr)

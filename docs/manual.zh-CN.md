@@ -30,7 +30,8 @@ Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些�
 - **共享 skill**：`~/.claude/skills` 是 Claude 和 Gemini 共用 skill 的唯一来源。每次调用都把其中的目录（`lead-*` 这类只给主脑用的除外）复制到临时目录的 `.agents/skills/`，Gemini 能看到全部，自己判断读哪些。你自己 agy 里的插件和 skill 不会被用到（见第 4 节）。
 - **`skills`**：Claude 为本次任务建议的共享 skill，连同路径一起给出，所以手动 skill（`disable-model-invocation`）也能用。Gemini 可以驳回建议或改用别的 skill，并报告读了哪些、驳回了哪些、建议增加哪些。
 - **`structured`**：回答是符合 `review_schema.json` 的 JSON，包括 `summary`、`findings`（每条含 `severity`、`location`、`claim`、`evidence`、`confidence`，可选 `suggestion`）、`skills_used`、`rejected_suggestions`、`suggested_skills`。Claude 需要逐条核实的审查都用它。
-- **审查循环**：`lead-gemini-review` skill（由 `install.py` 安装到 `~/.claude/skills`）告诉 Claude 什么时候做计划审或 diff 审、怎么写 brief、怎么核实发现、怎么复审。
+- **`proposal`**：Gemini 不做审查，而是自己独立出一份方案，回答是符合 `proposal_schema.json` 的 JSON，包括 `summary`、`assumptions`、`decisions`（每条含 `topic`、`choice`、`rationale`、`evidence`、`alternatives`、`confidence`）、`steps`、`risks`、`open_questions`，以及三个 skills 字段。它隐含 `structured`。Claude 只给它需求和代码，不给自己的方案；Claude 先写好自己的方案，再按决策点和 Gemini 的方案逐条对比。
+- **审查循环**：`lead-gemini-review` skill（由 `install.py` 安装到 `~/.claude/skills`）告诉 Claude 什么时候做计划审、diff 审或独立方案、怎么写 brief、怎么核实发现、怎么复审。
 
 ### 模型分档（Claude 默认按这个表选）
 
@@ -60,16 +61,19 @@ Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些�
 <仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "审查这些动画" --file 'D:\路径\modal.css' --skill review-animations --structured
 ```
 ```powershell
+<仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "需求：…… 约束：…… 请给出你的方案" --repo 'D:\路径\某仓库' --model gemini-4-neon-high --proposal
+```
+```powershell
 <仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --quota
 ```
 
-回答打印在 stdout；用量、调用 id、守门钩子拒绝了哪些操作打印在 stderr。`--file` 和 `--skill` 可以写多次；`--structured` 要求返回 JSON 结果。`--timeout` 设时间上限（秒）：默认 540，保证在前台运行时不超过 Claude Shell 工具的 10 分钟上限；长审查请放在后台运行，并加上 `--timeout 3600`。DeepSeek 另有 `--system "..."`、`--json`（要求返回 JSON）。
+回答打印在 stdout；用量、调用 id、守门钩子拒绝了哪些操作打印在 stderr。`--file` 和 `--skill` 可以写多次；`--structured` 要求返回 JSON 审查结果，`--proposal` 要求以 JSON 返回 Gemini 自己的方案。`--timeout` 设时间上限（秒）：默认 540，保证在前台运行时不超过 Claude Shell 工具的 10 分钟上限；长审查请放在后台运行，并加上 `--timeout 3600`。DeepSeek 另有 `--system "..."`、`--json`（要求返回 JSON）。
 
 ## 3. 查看原始输入和输出
 
 每次**真正发出去**的调用（成功或失败）都在 `<仓库>\logs\YYYY-MM.jsonl` 里记一行：实际发出的提示词、文件指纹（路径、大小、sha256）、完整回答或错误、用量、耗时。
 
-- Gemini 另记 `agy_transcript`（agy 自己的完整记录，含思考过程和每一步操作）、`tool_calls`（钩子对 agy 每次操作的判定，也能看出 Gemini 读了哪些 `SKILL.md`）、读仓库模式下的 `repo`、额度检查结果 `quota_check`，以及 `skills_suggested`、`structured`、`isolated`。
+- Gemini 另记 `agy_transcript`（agy 自己的完整记录，含思考过程和每一步操作）、`tool_calls`（钩子对 agy 每次操作的判定，也能看出 Gemini 读了哪些 `SKILL.md`）、读仓库模式下的 `repo`、额度检查结果 `quota_check`，以及 `skills_suggested`、`structured`、`proposal`、`isolated`。
 - DeepSeek 另记思考内容 `reasoning` 和是否在高峰时段 `peak`。
 
 MCP 结果第一行末尾有 `id=…`，按 id 查：
@@ -86,7 +90,7 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 
 - **按文件名和位置拒绝**：`secrets.toml`、各种 `.env`、证书和私钥（`*.pem`、`*.key`、`*.p12`、`*.pfx`、`*.jks`、`id_rsa*` 等）、`credentials.json`、`service_account*.json`、`.netrc`、`.npmrc`、`.pypirc`、`.git-credentials`、`.claude.json`；`.streamlit`、`.ssh`、`.aws`、`.kube`、`.gnupg`、`.azure`、`.gcloud` 目录下的文件；`~/.gemini`、`~/.agent-workers/agy-home` 和本仓库 `logs/` 里的任何文件。
 - **按内容拒绝**：文件内容、提示词、system 提示里出现像 Key 的内容就拒绝。包括各家 Key 和令牌的格式、JWT、`Bearer` 长串、私钥块、带密码的连接串、`xxx_api_key = "长串"` 和 `.env`/YAML 里的无引号写法。变量名以 `_path`、`_file`、`_dir`、`_url`、`_name` 结尾的赋值不算（它们存的是位置）。报错只说类型和行号。
-- **Gemini 只读**：每次调用都在临时目录装上守门钩子 `agy_guard.py`。它只放行工作区内、通过上面检查的 `read_file`（钩子自己在 `.agents/guard` 和 `.agents/hooks.json` 里的文件除外），只有 `structured` 调用时才额外放行 `finish`：agy 用它交回结果。执行命令、写文件、访问网页等一律拒绝；钩子自己出错也拒绝。仅靠 `--mode plan` 和空临时目录并不够：实测 agy 仍能读到工作区外的文件，所以需要钩子。
+- **Gemini 只读**：每次调用都在临时目录装上守门钩子 `agy_guard.py`。它只放行工作区内、通过上面检查的 `read_file`（钩子自己在 `.agents/guard` 和 `.agents/hooks.json` 里的文件除外），只有 `structured` 和 `proposal` 调用时才额外放行 `finish`：agy 用它交回结果。执行命令、写文件、访问网页等一律拒绝；钩子自己出错也拒绝。仅靠 `--mode plan` 和空临时目录并不够：实测 agy 仍能读到工作区外的文件，所以需要钩子。
 - **与你自己的 agy 隔离**：agy 以 `--gemini_dir ~/.agent-workers/agy-home` 运行。这个 home 里没有插件，`GEMINI.md` 就是 `reviewer_rules.md`，所以你的 agy 插件、skill 和 `GEMINI.md` 都不会作用于这些调用，它们也不再和你自己的会话共用 agy 的对话数据库。登录不受影响（agy 把它存在系统钥匙串里）。`--gemini_dir` 没有公开文档（在 agy 1.5.14 上实测；print 模式下 `GEMINI_HOME` 环境变量无效），所以每次调用都会检查 agy 是否真的用了这个 home，没用上就标 `NOT-ISOLATED`。
 - **不会误走付费 API**：传给 agy 的环境变量去掉了所有名字里带 key、token、secret、password、credential 的变量。每次调用还通过 `--settings` 强制设定 `useG1Credits: false`（订阅额度用完后不改用付费 AI credits）和 `modelProvider: ""`（不直连 Gemini API）。这些设定只对本工具的调用生效，不写入你的 agy 设置。斜杠命令也已禁用。
 - **哪些仓库可以发**：由你的 CLAUDE.md 决定（见 snippet 的 Privacy 一行）。代码只守密钥这条底线，不限制目录。

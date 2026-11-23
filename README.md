@@ -18,9 +18,10 @@ An MCP server that lets Claude Code act as the lead and hand part of the work to
 | `agy_guard.py` | agy `PreToolUse` hook that makes every call read-only |
 | `reviewer_rules.md` | The only rules agy loads for these calls (it becomes `GEMINI.md` in agy's private home) |
 | `review_schema.json` | JSON schema for `structured` review results |
+| `proposal_schema.json` | JSON schema for `proposal` results (Gemini's own independent plan) |
 | `worker_common.py` | Shared secret checks, size limit and call log |
 | `agents/` | Two Claude Code subagents: `gemini-reviewer` (second-opinion review) and `deepseek-drafter` (drafts and translations) |
-| `skills/` | Lead-only Claude Code skills: `lead-gemini-review` (plan and diff review loop with verification) |
+| `skills/` | Lead-only Claude Code skills: `lead-gemini-review` (plan and diff review loop and independent proposals, with verification) |
 | `docs/manual.md` | User manual: usage, model tiers, logs, troubleshooting (Chinese: `docs/manual.zh-CN.md`) |
 | `docs/claude-md-snippet.md` | A section to add to `~/.claude/CLAUDE.md` telling Claude when to hand work to the workers |
 | `docs/porting.md` | Role model (lead, reviewer worker, executor worker) and notes for adding other agents such as Codex |
@@ -88,6 +89,7 @@ Just ask Claude, for example:
 - "Have Gemini review `D:\path\to\repo` in repo mode, focusing on error handling"
 - "Have gemini-reviewer review `bar()` in `src/foo.py`"
 - "Get a Gemini review of this plan" (Claude follows the `lead-gemini-review` skill: it suggests skills, asks for structured findings and verifies each one)
+- "Have Gemini draft its own plan for this, then compare it with yours" (independent proposal: Gemini gets only the requirement and the code, never Claude's plan; Claude merges the two decision by decision and shows whose choice it adopted and why)
 - "Use ask_deepseek to translate this into English"
 - "Check the Gemini quota"
 
