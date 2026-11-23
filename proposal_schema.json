@@ -1,0 +1,83 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string", "description": "Your approach in two or three sentences."},
+    "assumptions": {
+      "type": "array",
+      "description": "What your plan takes for granted about the requirement or the code.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assumption": {"type": "string"},
+          "basis": {"type": "string", "description": "file:line or the passage it rests on, or \"unverified\"."}
+        },
+        "required": ["assumption", "basis"]
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "description": "Each design choice the task needs, most consequential first.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "topic": {"type": "string", "description": "The question being decided, in a few words."},
+          "choice": {"type": "string"},
+          "rationale": {"type": "string"},
+          "evidence": {"type": "string", "description": "file:line or passage the choice relies on, if any."},
+          "alternatives": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {"option": {"type": "string"}, "why_not": {"type": "string"}},
+              "required": ["option", "why_not"]
+            }
+          },
+          "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+        },
+        "required": ["topic", "choice", "rationale", "alternatives", "confidence"]
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "Implementation steps in order.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {"type": "string"},
+          "files": {"type": "array", "items": {"type": "string"}},
+          "verify": {"type": "string", "description": "How to check this step worked."}
+        },
+        "required": ["action", "verify"]
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"risk": {"type": "string"}, "mitigation": {"type": "string"}},
+        "required": ["risk", "mitigation"]
+      }
+    },
+    "open_questions": {"type": "array", "items": {"type": "string"}, "description": "Choices only the user can make."},
+    "skills_used": {"type": "array", "items": {"type": "string"}, "description": "Skills whose SKILL.md you read and followed."},
+    "rejected_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"skill": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["skill", "reason"]
+      }
+    },
+    "suggested_skills": {
+      "type": "array",
+      "description": "Skills (shared or not yet existing) you would add for this kind of task.",
+      "items": {
+        "type": "object",
+        "properties": {"skill": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["skill", "reason"]
+      }
+    }
+  },
+  "required": ["summary", "assumptions", "decisions", "steps", "risks", "open_questions", "skills_used",
+               "rejected_suggestions", "suggested_skills"]
+}

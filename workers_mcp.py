@@ -30,7 +30,7 @@ def _with_meta(out: dict, extra: str = "") -> str:
 
 @server.tool()
 async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = None, repo: str | None = None,
-                     skills: list[str] = [], structured: bool = False) -> str:
+                     skills: list[str] = [], structured: bool = False, proposal: bool = False) -> str:
     """Ask Gemini (Google AI Pro subscription quota, via the Antigravity CLI) for a read-only review. A guard hook
     lets agy only read files (no commands, no writes, no web) and refuses secret files. Two ways to give material:
       files  absolute paths; copies go into an empty temp dir (total up to 700KB).
@@ -43,6 +43,12 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
                   them or use others, and reports which it read, rejected and would add.
       structured  true: the answer is JSON with summary, findings (severity, location, claim, evidence, confidence),
                   skills_used, rejected_suggestions, suggested_skills. Use it for reviews you will verify item by item.
+      proposal    true: instead of reviewing, Gemini drafts its own independent plan, as JSON with summary,
+                  assumptions, decisions (each with topic, choice, rationale, alternatives, confidence and optional
+                  evidence), steps,
+                  risks, open_questions and the skills fields; implies structured. Brief it with the requirement,
+                  constraints and material only: never your own plan or leanings, so its plan stays independent.
+                  Write your plan before reading its answer, then compare them decision by decision.
     The `[model ...]` tag at the start of the header line adds `denied=N` when the guard refused some of agy's
     attempts, NOT-ISOLATED if agy ignored its own home (the user's plugins and GEMINI.md may then have applied; say
     so when reporting), and JSON-INVALID when a structured answer did not parse (the raw text follows).
@@ -70,7 +76,8 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     cancel = Cancel()
     try:
         out = await anyio.to_thread.run_sync(
-            lambda: _ask_gemini(prompt, files, model, cancel=cancel, repo=repo, skills=skills, structured=structured),
+            lambda: _ask_gemini(prompt, files, model, cancel=cancel, repo=repo, skills=skills, structured=structured,
+                                proposal=proposal),
             abandon_on_cancel=True)
     except anyio.get_cancelled_exc_class():
         cancel.cancel()
@@ -79,7 +86,7 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
         raise ToolError(str(e))
     denied = out.get("denied") or []
     extra = ((f" denied={len(denied)}" if denied else "") + ("" if out.get("isolated") else " NOT-ISOLATED")
-             + (" JSON-INVALID" if structured and out.get("data") is None else ""))
+             + (" JSON-INVALID" if (structured or proposal) and out.get("data") is None else ""))
     return _with_meta(out, extra)
 
 
