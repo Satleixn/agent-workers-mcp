@@ -15,6 +15,7 @@ Once [claude-md-snippet.md](claude-md-snippet.md) is in your `~/.claude/CLAUDE.m
 | Get a second opinion | "Have gemini-reviewer review `foo()` in `src/xxx.py`" |
 | Summarise a pile of files | "Use ask_gemini (hydrogen-medium) to summarise the `services/` folder" |
 | Review a whole repository, letting Gemini pick the files | "Have Gemini review `D:\…\some-repo` in repo mode, focusing on …" |
+| Review a branch, a checked-out PR or uncommitted work | "Have Gemini review this branch's changes against main" |
 | See the Gemini quota | "Check the Gemini quota" |
 | Pick the model | Name it, e.g. "Use neon-high to review …" |
 
@@ -24,6 +25,7 @@ After getting a result, Claude should verify it by running code or reading the s
 
 - **`files`**: a few named files, copied into the temporary directory's `files/` folder (keeping their relative paths, and apart from agy's own `.agents` folder). Up to 700KB in total (about 200k tokens).
 - **`repo`**: the whole repository is mounted read-only (`--add-dir`), and the temporary directory gets a file list, `FILES.txt` (the output of `git ls-files`, minus secret files and dependency folders); agy picks what to read from it. No 700KB cap, and nothing is written into the repository.
+- **`repo` + `base`**: a review of a change. `base` is a git ref (`main`, `origin/main`); the change runs from the merge base of `base` and `HEAD` to the working tree, so it covers a branch's commits and uncommitted edits together. The temporary directory also gets `DIFF.patch` (the diff) and `CHANGES.txt` (each changed file with its status, new untracked files marked `?`). Secret files and dependency folders are left out of both. Renames count as delete plus add: the side under a secret old name stays out, while the new name is checked like any other file (by name and content, as in plain `repo` mode). The diff passes the content checks (section 4) and shares the 700KB cap with `files`. A GitHub PR has to be checked out first (for example with `gh pr checkout` in a worktree); pass that checkout as `repo`. `base` cannot be combined with `proposal`.
 
 ### Skills and structured results
 
@@ -61,6 +63,9 @@ After getting a result, Claude should verify it by running code or reading the s
 <repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Review the animations" --file 'D:\path\modal.css' --skill review-animations --structured
 ```
 ```powershell
+<repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Review this change, focusing on error handling" --repo 'D:\path\some-repo' --base main --model gemini-4-neon-high --structured
+```
+```powershell
 <repo>\.venv\Scripts\python <repo>\ask_gemini.py --prompt "Requirement: ... Constraints: ... Draft your plan" --repo 'D:\path\some-repo' --model gemini-4-neon-high --proposal
 ```
 ```powershell
@@ -73,7 +78,7 @@ The answer goes to stdout; usage, the call id and any actions the guard hook ref
 
 Every call that is **actually sent** (successful or not) adds one line to `<repo>\logs\YYYY-MM.jsonl`: the prompt as sent, file fingerprints (path, size, sha256), the full answer or error, usage and elapsed time.
 
-- Gemini calls also record `agy_transcript` (agy's own full record, including its thinking and every step), `tool_calls` (the guard's decision on each action agy tried, including which `SKILL.md` files Gemini read), `repo` in repo mode, `quota_check`, `skills_suggested`, `structured`, `proposal` and `isolated`.
+- Gemini calls also record `agy_transcript` (agy's own full record, including its thinking and every step), `tool_calls` (the guard's decision on each action agy tried, including which `SKILL.md` files Gemini read), `repo` in repo mode, `base`, `merge_base`, `diff` (size and sha256) and `diff_excluded` (files left out) when `base` is set, `quota_check`, `skills_suggested`, `structured`, `proposal` and `isolated`.
 - DeepSeek calls also record the thinking text `reasoning` and whether the call fell in peak hours (`peak`).
 
 The first line of an MCP result ends with `id=…`. To look a call up by id:
@@ -93,6 +98,7 @@ $id = 'paste the id here'; Get-ChildItem -LiteralPath '<repo>\logs' -Filter '*.j
 - **Gemini is read-only**: each call installs the guard hook `agy_guard.py` in its temporary directory. It allows only `read_file` on files inside the workspace that pass the checks above (the guard's own files under `.agents/guard` and `.agents/hooks.json` excepted), plus, on `structured` and `proposal` calls only, `finish`, which agy uses to hand back the result; running commands, writing files, web access and everything else are denied, and so is anything the hook fails on. `--mode plan` plus an empty temporary directory is not enough on its own: in tests agy still read files outside the workspace, hence the hook.
 - **Isolated from your own agy**: agy runs with `--gemini_dir ~/.agent-workers/agy-home`, a home with no plugins whose `GEMINI.md` is `reviewer_rules.md`. Your agy plugins, skills and `GEMINI.md` therefore never apply to these calls, and they no longer share agy's conversation database with your own sessions. Sign-in is unaffected (agy keeps it in the OS keyring). `--gemini_dir` is undocumented (tested with agy 1.5.14; the `GEMINI_HOME` variable has no effect in print mode), so every call checks that agy really used that home and flags `NOT-ISOLATED` if not.
 - **No accidental paid API use**: every variable whose name contains key, token, secret, password or credential is removed from agy's environment. Each call also uses `--settings` to force `useG1Credits: false` (no paid AI credits once the subscription quota runs out) and `modelProvider: ""` (no direct Gemini API). These settings apply only to this tool's calls and are never written to your agy settings. Slash commands are disabled too.
+- **Git for `base` reviews** runs with `--no-ext-diff --no-textconv` and `core.fsmonitor=false`, so neither an external diff tool nor a text converter from the repository's config runs. Clean filters (for example git-lfs) still apply: they come from your own git config, never from a clone, and turning them off would break LFS diffs. Point `base` only at repositories whose `.git/config` you trust, as you would before running `git diff` in them yourself.
 - **Which repositories may be sent** is decided by your CLAUDE.md (see the Privacy line in the snippet). The code enforces only the no-secrets rule and does not restrict folders.
 
 ## 5. Cost, quota and time

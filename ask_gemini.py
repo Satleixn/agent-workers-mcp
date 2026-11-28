@@ -7,6 +7,8 @@ other tool. Two ways to give it material:
   files  copies of the given files go into the temp directory (total capped by MAX_TOTAL_BYTES);
   repo   a repository is mounted read-only with --add-dir and agy picks what to read from FILES.txt, a list of the
          repository's files; nothing is written into the repository.
+         With `base` (a git ref), the call reviews a change instead: the diff from the merge base of `base` and HEAD
+         to the working tree goes into the workspace as DIFF.patch, and CHANGES.txt lists the changed files.
 
 Isolation: agy runs with its own home (AGY_HOME, passed with --gemini_dir), so the user's agy plugins, skills and
 GEMINI.md never reach a review; that home's GEMINI.md is reviewer_rules.md. The shared skills (SKILLS_DIR, minus
@@ -24,8 +26,8 @@ Model choice (see docs/manual.md):
 Each call costs ~11k input tokens of agent overhead (~24k before agy got its own home), so batch small questions.
 
 Usage:
-  python ask_gemini.py --prompt "task" [--file a.py --file b.md] [--repo D:\\path\\to\\repo] [--model ...]
-                       [--skill name ...] [--structured] [--proposal]   (--proposal implies --structured)
+  python ask_gemini.py --prompt "task" [--file a.py --file b.md] [--repo D:\\path\\to\\repo [--base main]]
+                       [--model ...] [--skill name ...] [--structured] [--proposal]   (--proposal implies --structured)
                        [--timeout 3600]   (long runs: start it in the background; the default suits the foreground)
   python ask_gemini.py --quota
 """
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -44,7 +47,8 @@ import threading
 import time
 from pathlib import Path
 
-from worker_common import AGY_HOME, WorkerError, check_files, check_text, file_records, is_denied_path, log_call
+from worker_common import (AGY_HOME, DENY_DIRS, DENY_NAMES, MAX_TOTAL_BYTES, WorkerError, check_files, check_text,
+                           file_records, is_denied_path, log_call)
 
 DEFAULT_MODEL = "gemini-4-neon-medium"
 # Time limit for one call. Repository reviews on neon-high/xhigh have taken up to ~15 minutes, and agy can lose
@@ -92,10 +96,27 @@ PROPOSAL_NOTE = (
     "guessing at any approach the lead may have in mind. Answer only with JSON that matches the required schema; for "
     "each decision give the alternatives you weighed and the evidence it rests on.\n"
 )
+DIFF_NOTE = (
+    "This is a review of a change. {diff} CHANGES.txt in your working directory lists the {n} changed files, one per "
+    "line as status, tab, path relative to the repository (D = deleted: do not read it; ? = new and untracked: not in "
+    "the diff, read it in full). {excluded}Review the change: read the changed files and the code they call or that "
+    "calls them; report problems in unchanged code only where the change exposes or relies on them. Cite repository "
+    "paths with line numbers in the new version.\n"
+)
+DIFF_PATCH_TEXT = ("DIFF.patch in your working directory is `git diff` from {base} (merge base {sha}) to the "
+                   "repository's working tree, committed and uncommitted changes together.")
+NO_PATCH_TEXT = "The change from {base} (merge base {sha}) is only new untracked files, so there is no DIFF.patch."
 MAX_INDEX_FILES = 5000
 # Directories never listed in FILES.txt (dependencies and build output, not the code under review).
 INDEX_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", "dist",
                    "build"}
+GIT_TIMEOUT_S = 120
+# Flags for every diff of a `base` review. No program from the repository's config runs (external diff, textconv);
+# a rename shows as delete + add, so the side under a secret old name stays out (the new name is checked like any
+# other file, by name and content, as in plain repo mode) and every --name-status entry has two fields;
+# a submodule shows only as a commit change, whatever diff.submodule says; and a `repo` that is a subdirectory of a
+# larger repository gets only its own changes, with paths relative to it (the guard's root).
+DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--submodule=short", "--relative")
 # Windows caps a whole command line at 32,767 characters, and the prompt travels on it (--print=...).
 MAX_CMDLINE_CHARS = 32_000
 # Environment variables agy never needs. Dropping them keeps our DeepSeek key away from it, and keeps a
@@ -401,6 +422,92 @@ def _repo_index(repo: Path) -> list[str]:
     return lines
 
 
+def _git(repo: Path, *args: str, fail: str, cap: int | None = None) -> bytes:
+    """Run git in `repo` and return its stdout bytes; any failure raises WorkerError("<fail>: <git's message>").
+    stdout goes to a temporary file, so with `cap` no more than cap + 1 bytes are ever read into memory."""
+    cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-C", str(repo), *args]
+    with tempfile.TemporaryFile() as out:
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.PIPE,
+                                    creationflags=_NO_WINDOW)
+        except OSError as e:
+            raise WorkerError(f"could not run git: {e.strerror or e}")
+        try:
+            _, err = proc.communicate(timeout=GIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            proc.communicate()
+            raise WorkerError(f"{fail}: git did not finish within {GIT_TIMEOUT_S}s")
+        if proc.returncode != 0:
+            msg = err.decode("utf-8", errors="replace").strip()
+            raise WorkerError(f"{fail}: {msg[:500]}" if msg else fail)
+        out.seek(0)
+        return out.read() if cap is None else out.read(cap + 1)
+
+
+def _diff_excludes() -> list[str]:
+    """Pathspecs that keep secret files and dependency folders out of a `base` review's listings and diff. They are a
+    fixed set built from the denylists, so the command line stays short however many files changed; _diff_material
+    still checks every path that comes through with is_denied_path."""
+    return ([f":(exclude,glob,icase)**/{name}" for name in DENY_NAMES]
+            + [f":(exclude,glob,icase)**/{d}/**" for d in (*DENY_DIRS, *sorted(INDEX_SKIP_DIRS))])
+
+
+def _skipped(repo: Path, rel: str) -> bool:
+    """True for a path a review must not show: a secret file, or one inside a dependency or build folder."""
+    return (any(part.lower() in INDEX_SKIP_DIRS for part in Path(rel).parent.parts)  # folders only, like the globs
+            or is_denied_path((repo / rel).resolve()))
+
+
+def _diff_material(repo: Path, base: str, budget: int) -> tuple[bytes, str, list[str], int]:
+    """The change from `base` to the working tree of `repo`, for a review: the diff bytes, the merge base's sha,
+    `status<TAB>path` lines for CHANGES.txt (new untracked files as `?`), and how many changed files were left out as
+    secret or dependency files. Refuses (WorkerError) a bad ref, a diff over `budget` bytes, a diff holding something
+    shaped like a secret, and a change with nothing left to review. Writes nothing into the repository."""
+    if not base.strip() or base.startswith("-") or any(ord(c) < 32 for c in base):
+        raise WorkerError(f"base must be a git ref such as main or origin/main, got {base!r}")
+    sha = _git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{base}^{{commit}}",
+               fail=f"base {base!r} is not a commit in {repo}").decode().strip()
+    merge_base = _git(repo, "merge-base", sha, "HEAD",
+                      fail=f"no merge base between {base} and HEAD in {repo} (unrelated history or shallow clone?)"
+                      ).decode().strip()
+    excludes = _diff_excludes()
+
+    def names(*args: str) -> list[str]:
+        out = _git(repo, *args, fail=f"git could not list the change from {base}")
+        return [n for n in out.decode("utf-8", errors="replace").split("\0") if n]
+
+    fields = names("diff", *DIFF_FLAGS, "--name-status", "-z", merge_base, "--", ".", *excludes)
+    changed = list(zip(fields[0::2], fields[1::2]))  # --no-renames: every entry is status, path
+    # A file dropped from the index but still on disk (git rm --cached) is both D and untracked; keep it once, as D.
+    untracked = [p for p in names("ls-files", "--others", "--exclude-standard", "-z", "--", ".", *excludes)
+                 if p not in {path for _, path in changed}]
+    leaked = [p for _, p in changed if _skipped(repo, p)] + [p for p in untracked if _skipped(repo, p)]
+    if leaked:  # the glob pathspecs and is_denied_path disagree; refuse rather than send
+        raise WorkerError(f"refused: {leaked[0]} is a secret or dependency file that git's exclude patterns let "
+                          "through; nothing was sent")
+    all_changed = set(names("diff", *DIFF_FLAGS, "--name-only", "-z", merge_base, "--", "."))
+    all_untracked = set(names("ls-files", "--others", "--exclude-standard", "-z", "--", "."))
+    excluded = len((all_changed | all_untracked) - {p for _, p in changed} - set(untracked))
+    if not changed and not untracked:
+        raise WorkerError(f"nothing to review between {base} and the working tree of {repo}"
+                          + (f" ({excluded} secret or dependency files left out)" if excluded else ""))
+    diff = b""
+    if changed:
+        diff = _git(repo, "diff", *DIFF_FLAGS, merge_base, "--", ".", *excludes,
+                    fail=f"git could not diff the change from {base}", cap=max(budget, 0))
+        if len(diff) > budget:
+            raise WorkerError(f"the diff from {base} is over the {budget}-byte budget left after `files` (limit "
+                              f"{MAX_TOTAL_BYTES} bytes in all); use a closer base or split the review")
+        text = diff.decode("utf-8", errors="replace")
+        check_text(text, "the diff")
+        # Again without each line's leading +, - or space: the unquoted-assignment pattern is anchored at the start
+        # of a line and misses "+API_KEY=..." otherwise. Line numbers stay the same.
+        check_text(re.sub(r"(?m)^[ +\-]", "", text), "the diff")
+    lines = [f"{status}\t{path}" for status, path in changed] + [f"?\t{path}" for path in untracked]
+    return diff, merge_base, lines, excluded
+
+
 def _last_json(text: str):
     """The last of the JSON values in `text`. agy prints every result Gemini submits through `finish`: one that
     failed the --json-schema check is followed by the retry that passed (seen 2026-11-23), so the last one is the
@@ -419,13 +526,14 @@ def _last_json(text: str):
 
 def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel | None = None,
                timeout_s: int = PRINT_TIMEOUT_S, repo: str | None = None, skills=(), structured: bool = False,
-               proposal: bool = False) -> dict:
+               proposal: bool = False, base: str | None = None) -> dict:
     """Run one prompt; return {"text", "model", "elapsed_s", "usage", "call_id", "denied", "isolated"}, plus "data"
     (the parsed JSON, or None if it did not parse) when `structured` or `proposal`. Raises WorkerError on any failure.
     `cancel` lets another thread stop the call (the MCP server uses it when the client cancels). `timeout_s` is
     agy's own limit (the command line passes --timeout, CLI_TIMEOUT_S by default). `repo` mounts a
-    repository read-only for agy to explore; `skills` names the shared skills the caller suggests; `proposal` asks
-    for an independent plan and implies `structured` (see the module docstring)."""
+    repository read-only for agy to explore; `base` (with `repo`) makes it a review of the change from that git ref;
+    `skills` names the shared skills the caller suggests; `proposal` asks for an independent plan and implies
+    `structured` (see the module docstring)."""
     structured = structured or proposal
     model = model or DEFAULT_MODEL
     if model.startswith("-") or "orchestrator" in model:
@@ -445,6 +553,14 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
             raise WorkerError(f"not a directory: {repo_path}")
         if is_denied_path(repo_path / "x"):
             raise WorkerError(f"refused: {repo_path} is a secret location and is never mounted")
+    diff_info = None
+    if base is not None:
+        if repo_path is None:
+            raise WorkerError("base needs repo: pass the repository (or the PR's checkout) whose change to review")
+        if proposal:
+            raise WorkerError("base reviews a change and cannot be combined with proposal")
+        # Before the quota check: a bad ref or an oversized diff is refused without spending anything.
+        diff_info = _diff_material(repo_path, base, MAX_TOTAL_BYTES - sum(len(data) for _, data in checked))
     quota_note = _check_quota(model)
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="agy_", ignore_cleanup_errors=True) as work:
@@ -464,7 +580,19 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
         extra = []
         if repo_path:
             (Path(work) / "FILES.txt").write_text("\n".join(_repo_index(repo_path)) + "\n", encoding="utf-8")
-            full = REPO_NOTE.format(repo=repo_path) + "\n" + full
+            note = REPO_NOTE.format(repo=repo_path)
+            if diff_info:
+                diff, merge_base, changes, excluded = diff_info
+                if diff:
+                    (Path(work) / "DIFF.patch").write_bytes(diff)  # the exact bytes scanned and size-checked
+                listed = changes[:MAX_INDEX_FILES] + ([f"(list cut at {MAX_INDEX_FILES} files)"]
+                                                      if len(changes) > MAX_INDEX_FILES else [])
+                (Path(work) / "CHANGES.txt").write_text("\n".join(listed) + "\n", encoding="utf-8")
+                note += DIFF_NOTE.format(
+                    diff=(DIFF_PATCH_TEXT if diff else NO_PATCH_TEXT).format(base=base, sha=merge_base),
+                    n=len(changes),
+                    excluded=f"{excluded} secret or dependency files were left out. " if excluded else "")
+            full = note + "\n" + full
             extra = ["--add-dir", str(repo_path)]
         installed = _install_skills(Path(work), shared) if shared else []
         skipped = [s for s in suggested if s not in installed]
@@ -482,6 +610,10 @@ def ask_gemini(prompt: str, files=(), model: str | None = None, cancel: Cancel |
         record = {"worker": "gemini", "model": model, "prompt": full, "files": file_records(checked),
                   "repo": str(repo_path) if repo_path else None, "quota_check": quota_note,
                   "skills_suggested": suggested, "structured": structured, "proposal": proposal}
+        if diff_info:
+            record.update({"base": base, "merge_base": diff_info[1],
+                           "diff": {"bytes": len(diff_info[0]), "sha256": hashlib.sha256(diff_info[0]).hexdigest()},
+                           "diff_excluded": diff_info[3]})
         try:
             result = _run_agy(
                 [f"--print={full}", "--model", model, "--mode", "plan", "--disable-slash-commands", *extra,
@@ -592,6 +724,7 @@ def main() -> int:
     ap.add_argument("--file", action="append", default=[])
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--repo", help="mount this repository read-only and let agy pick the files to read")
+    ap.add_argument("--base", help="with --repo: review the change from this git ref (merge base) to the working tree")
     ap.add_argument("--skill", action="append", default=[], help="suggest a shared skill to Gemini (repeatable)")
     ap.add_argument("--structured", action="store_true", help="ask for the result as JSON (review_schema.json)")
     ap.add_argument("--proposal", action="store_true",
@@ -609,7 +742,7 @@ def main() -> int:
         if not a.prompt:
             ap.error("--prompt is required unless --quota is given")
         out = ask_gemini(a.prompt, a.file, a.model, timeout_s=a.timeout, repo=a.repo, skills=a.skill,
-                         structured=a.structured, proposal=a.proposal)
+                         structured=a.structured, proposal=a.proposal, base=a.base)
     except WorkerError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

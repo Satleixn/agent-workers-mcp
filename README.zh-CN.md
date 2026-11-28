@@ -87,6 +87,7 @@ python install.py
 平时直接对 Claude 说，例如：
 
 - "让 Gemini 以读仓库模式审查 `D:\path\to\repo`，重点看错误处理"
+- "让 Gemini 审这个分支相对 main 的改动"（`repo` + `base`：Gemini 拿到 diff 和改动文件清单；GitHub 上的 PR 先检出）
 - "让 gemini-reviewer 审查 `src/foo.py` 里的 `bar()`"
 - "让 Gemini 审一下这个计划"（Claude 按 `lead-gemini-review` skill 执行：建议 skill、要求结构化结论、逐条核实）
 - "让 Gemini 独立出一份方案，再和你的对比"（独立方案：Gemini 只拿到需求和代码，看不到 Claude 的方案；Claude 按决策点逐条合成，标明采纳了谁的、为什么）

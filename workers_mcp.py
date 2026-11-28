@@ -30,13 +30,19 @@ def _with_meta(out: dict, extra: str = "") -> str:
 
 @server.tool()
 async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = None, repo: str | None = None,
-                     skills: list[str] = [], structured: bool = False, proposal: bool = False) -> str:
+                     skills: list[str] = [], structured: bool = False, proposal: bool = False,
+                     base: str | None = None) -> str:
     """Ask Gemini (Google AI Pro subscription quota, via the Antigravity CLI) for a read-only review. A guard hook
     lets agy only read files (no commands, no writes, no web) and refuses secret files. Two ways to give material:
       files  absolute paths; copies go into an empty temp dir (total up to 700KB).
       repo   absolute path of a repository; it is mounted read-only and agy picks what to read from a file list,
              so you only write the brief (what to review, what to look for). No size cap; nothing is written into
              the repository. Ask the user before sending a private repository unless their instructions allow it.
+      base   with repo: a git ref (main, origin/main); the call reviews the change from the merge base of base and
+             HEAD to the working tree, committed and uncommitted (a branch, a PR, or work not yet committed). The
+             diff (secret and dependency files left out) and a list of changed files go to Gemini; the diff shares
+             the 700KB cap with files. A PR must be checked out first (its checkout is repo). Use with structured;
+             not with proposal.
     agy runs in its own home: the user's agy plugins and GEMINI.md never apply; reviewer rules do. Every shared skill
     (~/.claude/skills minus lead-* ones) is available to Gemini, which picks what to read.
       skills      names of shared skills you suggest for this task (manual-only ones included); Gemini may reject
@@ -77,7 +83,7 @@ async def ask_gemini(prompt: str, files: list[str] = [], model: str | None = Non
     try:
         out = await anyio.to_thread.run_sync(
             lambda: _ask_gemini(prompt, files, model, cancel=cancel, repo=repo, skills=skills, structured=structured,
-                                proposal=proposal),
+                                proposal=proposal, base=base),
             abandon_on_cancel=True)
     except anyio.get_cancelled_exc_class():
         cancel.cancel()
