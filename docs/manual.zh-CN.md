@@ -15,6 +15,7 @@
 | 第二意见 | "让 gemini-reviewer 审查 `src/xxx.py` 里的 `foo()`" |
 | 读一堆文件后做总结 | "用 ask_gemini（hydrogen-medium）总结 `services/` 目录" |
 | 审查整个仓库，让 Gemini 自己挑文件 | "让 Gemini 以读仓库模式审查 `D:\…\某仓库`，重点看……" |
+| 审查一个分支、已检出的 PR 或尚未提交的改动 | "让 Gemini 审这个分支相对 main 的改动" |
 | 看 Gemini 额度 | "查一下 Gemini 额度" |
 | 指定模型 | 在话里写模型名，例如"用 neon-high 审查……" |
 
@@ -24,6 +25,7 @@ Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些�
 
 - **`files`**：指定几个文件，复制进临时目录下的 `files/`（保留相对路径，与 agy 自己的 `.agents` 目录分开）。总量上限 700KB（约 20 万 token）。
 - **`repo`**：把整个仓库以只读方式挂进来（`--add-dir`），临时目录里放一份文件清单 `FILES.txt`（`git ls-files` 的结果，去掉密钥文件和依赖目录），agy 按清单自己挑着读。不受 700KB 上限限制，也不往仓库里写任何东西。
+- **`repo` + `base`**：审查一次改动。`base` 是一个 git 引用（`main`、`origin/main`）；改动的范围是从 `base` 与 `HEAD` 的合并基点到工作区，分支上的提交和尚未提交的修改都包括在内。临时目录里还会多出 `DIFF.patch`（diff 本身）和 `CHANGES.txt`（每个改动文件及其状态，新建且未跟踪的文件标 `?`）。两者都不含密钥文件和依赖目录。改名按"删除 + 新增"处理：旧名是密钥文件名的那一侧照样排除，新名则和其他文件一样按文件名和内容检查（与普通 `repo` 模式相同）。diff 要通过内容检查（第 4 节），并与 `files` 共用 700KB 上限。GitHub 上的 PR 需要先检出（例如在 worktree 里运行 `gh pr checkout`），再把那个检出目录作为 `repo`。`base` 不能与 `proposal` 同时使用。
 
 ### Skill 与结构化结果
 
@@ -61,6 +63,9 @@ Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些�
 <仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "审查这些动画" --file 'D:\路径\modal.css' --skill review-animations --structured
 ```
 ```powershell
+<仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "审查这次改动，重点看错误处理" --repo 'D:\路径\某仓库' --base main --model gemini-4-neon-high --structured
+```
+```powershell
 <仓库>\.venv\Scripts\python <仓库>\ask_gemini.py --prompt "需求：…… 约束：…… 请给出你的方案" --repo 'D:\路径\某仓库' --model gemini-4-neon-high --proposal
 ```
 ```powershell
@@ -73,7 +78,7 @@ Claude 拿到结果后应当自己跑代码或查原文核验，并说明哪些�
 
 每次**真正发出去**的调用（成功或失败）都在 `<仓库>\logs\YYYY-MM.jsonl` 里记一行：实际发出的提示词、文件指纹（路径、大小、sha256）、完整回答或错误、用量、耗时。
 
-- Gemini 另记 `agy_transcript`（agy 自己的完整记录，含思考过程和每一步操作）、`tool_calls`（钩子对 agy 每次操作的判定，也能看出 Gemini 读了哪些 `SKILL.md`）、读仓库模式下的 `repo`、额度检查结果 `quota_check`，以及 `skills_suggested`、`structured`、`proposal`、`isolated`。
+- Gemini 另记 `agy_transcript`（agy 自己的完整记录，含思考过程和每一步操作）、`tool_calls`（钩子对 agy 每次操作的判定，也能看出 Gemini 读了哪些 `SKILL.md`）、读仓库模式下的 `repo`，设了 `base` 时的 `base`、`merge_base`、`diff`（大小和 sha256）和 `diff_excluded`（被排除的文件数），额度检查结果 `quota_check`，以及 `skills_suggested`、`structured`、`proposal`、`isolated`。
 - DeepSeek 另记思考内容 `reasoning` 和是否在高峰时段 `peak`。
 
 MCP 结果第一行末尾有 `id=…`，按 id 查：
@@ -93,6 +98,7 @@ $id = '把 id 粘贴在这里'; Get-ChildItem -LiteralPath '<仓库>\logs' -Filt
 - **Gemini 只读**：每次调用都在临时目录装上守门钩子 `agy_guard.py`。它只放行工作区内、通过上面检查的 `read_file`（钩子自己在 `.agents/guard` 和 `.agents/hooks.json` 里的文件除外），只有 `structured` 和 `proposal` 调用时才额外放行 `finish`：agy 用它交回结果。执行命令、写文件、访问网页等一律拒绝；钩子自己出错也拒绝。仅靠 `--mode plan` 和空临时目录并不够：实测 agy 仍能读到工作区外的文件，所以需要钩子。
 - **与你自己的 agy 隔离**：agy 以 `--gemini_dir ~/.agent-workers/agy-home` 运行。这个 home 里没有插件，`GEMINI.md` 就是 `reviewer_rules.md`，所以你的 agy 插件、skill 和 `GEMINI.md` 都不会作用于这些调用，它们也不再和你自己的会话共用 agy 的对话数据库。登录不受影响（agy 把它存在系统钥匙串里）。`--gemini_dir` 没有公开文档（在 agy 1.5.14 上实测；print 模式下 `GEMINI_HOME` 环境变量无效），所以每次调用都会检查 agy 是否真的用了这个 home，没用上就标 `NOT-ISOLATED`。
 - **不会误走付费 API**：传给 agy 的环境变量去掉了所有名字里带 key、token、secret、password、credential 的变量。每次调用还通过 `--settings` 强制设定 `useG1Credits: false`（订阅额度用完后不改用付费 AI credits）和 `modelProvider: ""`（不直连 Gemini API）。这些设定只对本工具的调用生效，不写入你的 agy 设置。斜杠命令也已禁用。
+- **`base` 审查时的 git**：以 `--no-ext-diff --no-textconv` 和 `core.fsmonitor=false` 运行，仓库配置里的外部 diff 工具和文本转换程序都不会执行。clean 过滤器（例如 git-lfs）仍然生效：它来自你自己的 git 配置，clone 不会带来，关掉反而会让 LFS 文件的 diff 出错。所以只对 `.git/config` 可信的仓库用 `base`，就像你自己在里面运行 `git diff` 之前一样。
 - **哪些仓库可以发**：由你的 CLAUDE.md 决定（见 snippet 的 Privacy 一行）。代码只守密钥这条底线，不限制目录。
 
 ## 5. 费用、额度和时间

@@ -87,6 +87,7 @@ Check both workers from the command line first (if your venv is outside the repo
 Just ask Claude, for example:
 
 - "Have Gemini review `D:\path\to\repo` in repo mode, focusing on error handling"
+- "Have Gemini review this branch's changes against main" (`repo` + `base`: Gemini gets the diff and the list of changed files; a GitHub PR is checked out first)
 - "Have gemini-reviewer review `bar()` in `src/foo.py`"
 - "Get a Gemini review of this plan" (Claude follows the `lead-gemini-review` skill: it suggests skills, asks for structured findings and verifies each one)
 - "Have Gemini draft its own plan for this, then compare it with yours" (independent proposal: Gemini gets only the requirement and the code, never Claude's plan; Claude merges the two decision by decision and shows whose choice it adopted and why)
